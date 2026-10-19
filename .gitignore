@@ -1,0 +1,15 @@
+node_modules/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.log
+.DSH-test*
+_archive/
+_tmp/
+.env
+.env.*
+!.env.example
+coverage/
+*.tmp

@@ -1,0 +1,51 @@
+{
+  "name": "dsh-memory-local",
+  "version": "0.1.0-local.1",
+  "private": true,
+  "description": "Self-maintained fork of the official dsh-memory plugin: durable cross-session memory (memory_write / memory_search / memory_forget + the memory:recall prompt section). Source of truth for 小会计 · 记忆引擎 v2 (G24).",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "memory",
+    "sqlite",
+    "fork"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-system-prompt": "^0.1.0-rc.6 || ^0.2.0-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6 || ^0.2.0-rc.1"
+  },
+  "dependencies": {},
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node test/regression.mjs",
+    "deploy": "node deploy.mjs",
+    "restore": "node restore.mjs",
+    "verify": "node verify-after-restart.mjs"
+  }
+}

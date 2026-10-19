@@ -1,0 +1,55 @@
+{
+  "name": "@kira905/dsh-memory-toolkit",
+  "version": "0.1.0",
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "DSH 记忆面工具集：独立向量记忆引擎（增量同步 / 混合召回 / 文档索引）+ 记忆库只读体检工具链 + 本地记忆插件 fork + persona 记忆体检",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "memory",
+    "vector-search",
+    "embeddings",
+    "sqlite",
+    "fts5",
+    "plugin"
+  ],
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "author": "kira905",
+  "homepage": "https://github.com/kira905/dsh-memory-toolkit#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kira905/dsh-memory-toolkit.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kira905/dsh-memory-toolkit/issues"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "dsh-memory-audit": "./persona-memory-audit.mjs",
+    "dsh-memory-summary": "./memory-db-tools/list-memory-summary.mjs",
+    "dsh-memory-export": "./memory-db-tools/audit-export.mjs"
+  },
+  "files": [
+    "memory-engine/",
+    "memory-db-tools/",
+    "dsh-memory-local/",
+    "lib/",
+    "persona-memory-audit.mjs",
+    "README.md",
+    "README.en.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "help": "node memory-db-tools/audit-export.mjs --help",
+    "audit": "node persona-memory-audit.mjs",
+    "test:engine": "node memory-engine/test/run.mjs",
+    "test:plugin": "node dsh-memory-local/test/regression.mjs"
+  }
+}

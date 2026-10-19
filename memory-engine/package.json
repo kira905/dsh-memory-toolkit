@@ -1,0 +1,22 @@
+{
+  "name": "dsh-memory-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "记忆引擎 v2 · 离线层（独立向量库 / 增量同步 / 兜底 hash 轮转 / 召回 / 启动自检）· 方案 docs/P2-记忆引擎升级-方案-20260916.md §3.1 §3.3 §8.3",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node test/run.mjs",
+    "selfcheck": "node cli/selfcheck.mjs",
+    "sync": "node cli/sync.mjs",
+    "sweep": "node cli/sweep.mjs",
+    "recall": "node cli/recall.mjs",
+    "serve": "node serve.mjs",
+    "bench": "node bench/bench.mjs"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.5.2"
+  }
+}

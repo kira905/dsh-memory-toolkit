@@ -1,0 +1,20 @@
+# The dsh-memory bundle patch: one row inserted over whatever layers came
+# before it. A patch replaces the targeted row's whole `config`, so a profile
+# overriding this row must restate every key it wants to keep.
+#
+# `path` has no code-side default on purpose — a durable store of user facts
+# must not land in whatever directory the harness happened to start in. The
+# deployment value lives here, beside the row, resolved through the loader's
+# `dshHomePath` so every profile on this machine shares one memory file.
+
+- insert:
+    - id: memory
+      name: dsh-memory
+      config:
+        path: !!js dshHomePath('memory/memory.db')
+        promptRecentCount: 10
+        promptMaxChars: 2000
+        maxTextChars: 2000
+        searchLimitDefault: 10
+        searchLimitMax: 50
+        promptOrder: 50

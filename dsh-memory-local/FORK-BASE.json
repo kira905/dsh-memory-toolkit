@@ -1,0 +1,26 @@
+{
+  "forkName": "dsh-memory-local",
+  "upstream": {
+    "name": "dsh-memory",
+    "version": "0.1.0",
+    "license": "MIT"
+  },
+  "source": {
+    "dir": "<DSH_HOME>/profiles/web/node_modules/dsh-memory",
+    "file": "lib/index.js",
+    "sha256": "494ca272f674918f5acfcf32327c164c6eba26fa08fc28bef50e085754c6f28c",
+    "bytes": 14224,
+    "lines": 421,
+    "dtsSha256": "471db6217fe4fc2ccc602a021efbc70f5a6490bd5d0c1e94123300d63e4dedf0",
+    "patchSha256": "1d34ead2d421cecce0d448131dc33e9223d2bcea3597d74d30911fe6ad1e7e99"
+  },
+  "forkedAt": "2026-09-20T16:15:20.970Z",
+  "device": "local-dev",
+  "card": "G24-S2a",
+  "note": [
+    "源码权威 = 本仓 tools/dsh-memory-local/src/；官方 lib/index.js 是 fork 的字节基线。",
+    "npm 分发包不含 TypeScript 源，故本 fork 以官方编译产物为源码基线，构建 = 语法校验 + 拷贝 + 指纹。",
+    "cordis.patch.yml 逐字节沿用上游：其 insert name 必须保持 `dsh-memory`，",
+    "因为 profile 的 bundle 名、patch insert name、.package-map.json 全部按该槽位解析（见 README §3）。"
+  ]
+}
