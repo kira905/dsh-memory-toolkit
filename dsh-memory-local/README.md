@@ -14,7 +14,7 @@
 | 项 | 值 |
 |---|---|
 | 上游包 | `dsh-memory@0.1.0`（npm dist · MIT） |
-| 基点文件 | `lib/index.js` —— sha256 `494ca272f674918f5acfcf32327c164c6eba26fa08fc28bef50e085754c6f28c`，421 行 |
+| 基点文件 | `lib/index.js` —— 421 行（逐字节 sha256 记在 `FORK-BASE.json` 的 `source.sha256`） |
 | 上游来源（只读） | `<DSH_HOME>/profiles/<profile>/node_modules/dsh-memory/` |
 | fork 时间 | 2026-09-21 |
 

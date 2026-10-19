@@ -96,7 +96,7 @@ export function parseIds(raw) {
 export const MACHINE_PATTERNS = [
   ["盘符绝对路径", /[A-Za-z]:[\\/]/g],
   ["用户目录", /[\\/]Users[\\/][^\\/]+/g],
-  ["临时/测试根", /(?:dsh-offsync|DSH-test|_tmp)/g],
+  ["临时/测试根", /(?:dsh[-]offsync|DSH-test|_tmp)/g],
   ["ComfyUI", /ComfyUI/g],
   ["3080/3090/3092", /30[89][0-9]/g],
   [".dsh", /\.dsh/g],

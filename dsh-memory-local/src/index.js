@@ -3,7 +3,7 @@
  *
  * Upstream base : dsh-memory@0.1.0  (npm dist, MIT)
  * Base file     : lib/index.js
- * Base sha256   : 494ca272f674918f5acfcf32327c164c6eba26fa08fc28bef50e085754c6f28c
+ * sourceSha256: 494ca272f674918f5acfcf32327c164c6eba26fa08fc28bef50e085754c6f28c
  * Base lines    : 421
  * Forked        : 2026-09-20T16:15:20.970Z
  * Fork owner    : dsh-memory-toolkit maintainers

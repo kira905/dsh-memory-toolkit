@@ -41,7 +41,7 @@ export function formatDate(ms) {
 /**
  * 剥掉孤立代理项（lone surrogate，U+D800–U+DFFF）。
  *
- * ⚠️ 2026-10-12 事故修复（会话 `session-dddcf909` 第 23 棒永久 HTTP 400）：
+ * ⚠️ 某次事故修复（详见 CHANGELOG）—— 会话历史永久 HTTP 400：
  * 记忆文本里含 emoji（📦/🐋…，星面字符 = 一对代理项）时，若按 **UTF-16 码元** `slice`
  * 截断，会正好切在代理对中间，留下孤立高代理项（如 `\ud83d`）。该文本进会话历史后，
  * 请求体 JSON 变成 `"…\ud83d…"` ⇒ DeepSeek 网关 `Failed to parse the request body as JSON:
