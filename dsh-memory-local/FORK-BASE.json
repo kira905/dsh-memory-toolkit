@@ -15,8 +15,6 @@
     "patchSha256": "1d34ead2d421cecce0d448131dc33e9223d2bcea3597d74d30911fe6ad1e7e99"
   },
   "forkedAt": "2026-09-20T16:15:20.970Z",
-  "device": "local-dev",
-  "card": "G24-S2a",
   "note": [
     "源码权威 = 本仓 tools/dsh-memory-local/src/；官方 lib/index.js 是 fork 的字节基线。",
     "npm 分发包不含 TypeScript 源，故本 fork 以官方编译产物为源码基线，构建 = 语法校验 + 拷贝 + 指纹。",
