@@ -17,7 +17,7 @@
     "plugin"
   ],
   "type": "module",
-  "license": "AGPL-3.0-or-later",
+  "license": "AGPL-3.0-only",
   "author": "kira905",
   "homepage": "https://github.com/kira905/dsh-memory-toolkit#readme",
   "repository": {
