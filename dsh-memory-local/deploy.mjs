@@ -137,8 +137,13 @@ console.log(`source   : ${here}`)
 console.log(`target   : ${target}${isProduction ? '  ⚠ PRODUCTION HOME' : '  [non-default home]'}`)
 console.log(`entity   : ${entityExists ? (alreadyFork ? `already fork (sha ${entitySha.slice(0, 16)}…)` : entityPkg?.fork ? 'fork, but different sha' : `upstream ${entityPkg?.name}@${entityPkg?.version}`) : 'absent'}`)
 console.log(`lib sha  : ${srcSha}`)
-if (!fs.existsSync(packageMapFile)) {
-  console.error(`[deploy] 找不到 ${packageMapFile} —— 这不是一个可加载的 DSH profile`)
+// gate0b：profile 可加载性 —— 0.1.x 世代用 node_modules/.package-map.json，
+// 0.2.0-rc.x 起该文件已废弃（2026-10-28 实测：已装 @deepseek-ai 包 6,273 个 .js
+// 里 `package-map` / `packageMap` / `modules.yaml` 零引用），现世代以 pnpm 的
+// node_modules/.modules.yaml 为准 ⇒ 二者任一存在即视为可加载。
+const modulesYamlFile = path.join(profile, 'node_modules', '.modules.yaml')
+if (!fs.existsSync(packageMapFile) && !fs.existsSync(modulesYamlFile)) {
+  console.error(`[deploy] 找不到 ${packageMapFile} 或 ${modulesYamlFile} —— 这不是一个可加载的 DSH profile`)
   process.exit(EXIT.USAGE)
 }
 
@@ -170,6 +175,12 @@ if (isUpstream) {
   const existing = findMatchingSnapshot(target)
   if (existing) { backupDir = existing; reusedSnapshot = true }
   else backupDir = path.join(archiveRoot, `g24-s2a-memory-deploy-${stamp()}`)
+} else if (!entityExists) {
+  // 目标 profile 里**根本没有** dsh-memory 实体 = 全新安装（2026-10-28 为小汐生活实例
+  // `--profile life` 补的分支）：没有「上游原物」可归档，restore.mjs 也用不到还原源
+  // ⇒ 只建一个记录目录，DEPLOY-INFO 落这里。
+  backupDir = path.join(archiveRoot, `g24-s2a-memory-deploy-${stamp()}`)
+  console.log('[deploy] 目标 profile 无 dsh-memory 实体 = 全新安装，无需归档上游原物')
 } else {
   // 已在 fork 态：沿用最近一个「含上游原物」的备份目录（restore 的唯一还原源）
   const candidates = fs.existsSync(archiveRoot)
@@ -288,6 +299,7 @@ const info = {
   rollback: `node ${path.join(here, 'restore.mjs')} --target ${home}${isProduction ? ' --allow-production' : ''}`,
 }
 const infoFile = path.join(backupDir, `DEPLOY-INFO-${stamp()}.json`)
+fs.mkdirSync(backupDir, { recursive: true })
 fs.writeFileSync(infoFile, `${JSON.stringify(info, null, 2)}\n`, 'utf8')
 console.log(`\n[deploy] complete — 记录：${infoFile}`)
 console.log('[deploy] 未重启任何 DSH（本脚本不做重启）。隔离实例请用测试环境冒烟脚本启动：')
