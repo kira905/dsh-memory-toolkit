@@ -1,0 +1,7 @@
+{
+  "_comment": "号段表。单机安装只留一条 local 就够了；多机共用一个记忆库时按机器各加一条。",
+  "_comment_fields": "host = 这一段的名字（自定）；base = 该段起始 id；width = 段宽（所有段共用）。非本机条目要加 remote 才会去读：{ ssh: 别名, node: 远端 node 路径, db: 远端库路径(可省) }。",
+  "self": "local",
+  "width": 1000000,
+  "bands": [{ "host": "local", "base": 2000000 }]
+}

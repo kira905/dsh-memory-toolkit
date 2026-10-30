@@ -43,6 +43,24 @@ hits are contractual strings (the excluded-directory list and the guard's ignore
 
 *English*: recall chain hardening — 256-char query truncation; an encoding time budget with a **fixed top-K degradation** (never empty, never throws); a lexicon/BM25 second path fused through RRF (off by default, one-line switch, byte-identical results when off); and an opt-in side-channel JSONL recall log with byte/generation/age caps. Dictionary assets (~1.25 MB, jieba · MIT) ship in `memory-engine/dict/`; `npm pack` measures 1.1 MB tarball / 2.8 MB unpacked / 140 files. The 184 existing tests are unchanged and green, and `tools/verify-recall-chain.mjs` adds 15 acceptance checks. Interface changes are additive only.
 
+### 分层软淘汰 + 号段哨兵（K5，净新增件）
+
+记忆只能删、不能降级；多台机共用一个库时 id 号段越界没人喊 —— 各给一件，**出厂全是干跑 / 只读**。
+
+- **`layer` 字段 + 迁移**（新文件 `lib/layers.mjs` / `lib/layer-migrate.mjs` / `cli/layer-migrate.mjs`）：加一列 `layer`，存量行回填缺省层。
+  **零删行**：行数 / `sqlite_sequence` / `PRAGMA integrity_check` 三项改完复核，任一不符就报错并指向备份。
+  **幂等**：列已在、空值已清零 ⇒ 第二次 `--apply` 库文件逐字节不变。`--apply` **必须**同时给 `--db` 与 `--backup`；`--restore <备份>` 默认干跑，真还原走「同目录临时文件 + sha 校验 + rename」，并先摘掉陈旧 `-wal`/`-shm`。
+- **软淘汰执行器**（新文件 `lib/layer-move.mjs` / `cli/layer-move.mjs`）：整层搬进同库边表 `memories_evicted`，一条命令出去、一条命令回来，**一条不删**。
+  硬判据 = 搬出行数 + 剩下行数 == 搬前总行数（事务内断言）；每行带 `content_sha`，搬回前先核指纹，边表被改过就整批拒动。配套 `--dump` / `--verify` 做逐行对拍；会搬空主表时默认拒跑（`--force` 才动）。
+  代价写进 README：搬走的行仍占库体积、边表没有 FTS 索引。
+- **号段哨兵**（新文件 `lib/band-sentinel.mjs` / `cli/band-sentinel.mjs`）：`sqlite_sequence` 主判 + 「更高位段有行」才判红；**更低位的别台段行只披露不判红**（生产件踩过的假红，没改回去）。
+  **单机退化**：配置里只有一条 band 就只读本机、不 ssh；多机才走配置里的 `remote { ssh, node, db }`。**任一远端读不到 ⇒ 结论写「未探测 / 不可达」，退出码不是 4**（4 只留给本机库读不到）；`--require-all` 才把未探测算失败（rc=5）。
+- **配置驱动**：`memory-engine/config/layers.json`（层名集合 / 列名 / 缺省层）与 `memory-engine/config/bands.json`（号段表）。代码里没有写死的层名，也没有任何机器名。
+- **CLI 惯例**：新增三个命令全部 `--help` 可读、未知参数 fail-closed（rc=2）、默认 dry-run、`--json` **只落文件不上 stdout**、`isMainEntry` 守卫走 `realpathSync` 双方比。
+- **验证**：`memory-engine/test` **既有 184 项一行未改、全绿**；新增 `test/12-layering.test.mjs` **21 项**（干跑零写 / 加列回填 / 幂等 / 备份还原 / 搬出守恒 / 搬回逐行指纹一致 / 边表被改整批拒动 / 号段红绿对照 / 远端读不到不许 rc=4）。新增 7 个代码件对生产同名件的行级同源度全部 < 50%（逐件读数见仓根 `k5-progress.jsonl`）。
+
+*English*: layered soft eviction + id-band sentinel (net-new). `layer-migrate` adds a `layer` column and backfills the default layer — zero row deletion, idempotent (second `--apply` is byte-identical), requires an explicit `--db` and a `--backup`, and `--restore` is dry-run by default. `layer-move` moves a whole layer into the in-database side table `memories_evicted` and back, with the hard invariant `moved + remaining == before` asserted in-transaction and per-row `content_sha` verified before restoring. `band-sentinel` checks the `sqlite_sequence`-derived next id against a config-driven band table, judges rows in higher bands red, only *discloses* rows in lower foreign bands, degrades to a single-machine check with no ssh, and never returns 4 for an unreachable peer. All three CLIs are `--help`-readable, fail closed on unknown flags, default to dry-run, and write JSON reports to files only. The 184 existing tests are unchanged and green; `test/12-layering.test.mjs` adds 21 checks.
+
 ## v0.1.3 — 2026-10-30
 
 **主包补 bundle 声明 + 子路径导出面**（修「装完不生效」；无插件行为变化）：

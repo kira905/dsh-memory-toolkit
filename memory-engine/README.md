@@ -22,9 +22,12 @@
 ```
 memory-engine/
 ├─ serve.mjs            编码桥（回环 HTTP，模型常驻）
-├─ cli/                 sync.mjs · sweep.mjs · recall.mjs · selfcheck.mjs
+├─ cli/                 sync.mjs · sweep.mjs · recall.mjs · selfcheck.mjs ·
+│                       layer-migrate.mjs（加层字段）· layer-move.mjs（整层搬走/搬回）· band-sentinel.mjs（号段哨兵）
 ├─ lib/                 config / vectors-store / memory-source / embedder / sync / sweep / recall /
-│                       lexicon-recall（词表第二路） / recall-log（旁路留痕） / selfcheck / cli-util / hashes
+│                       lexicon-recall（词表第二路） / recall-log（旁路留痕） / selfcheck / cli-util / cli-strict / hashes /
+│                       layers（层配置 + 行指纹） / layer-migrate / layer-move / band-sentinel
+├─ config/              layers.json（层名集合 / 列名 / 缺省层） · bands.json（号段表）
 ├─ dict/                词表素材：词典.txt · 词频.txt（jieba · MIT） · LICENSE-词典.md · lexicon-config.json（开关）
 ├─ tools/               fetch-model.mjs（模型权重）· bridge-smoke.mjs · smoke-recall.mjs
 │                       verify-recall-chain.mjs（召回链验收夹具，自带判据）
@@ -65,6 +68,15 @@ node tools\verify-recall-chain.mjs
 
 # 基准（写报告）
 node bench\bench.mjs --memory-db <副本> --out bench-report.json
+
+# 分层软淘汰 + 号段哨兵（三件都默认干跑 / 只读，详见仓根 README 同名小节）
+node cli\layer-migrate.mjs [--db <库>]                                  # 干跑：说会加什么列、回填几行
+node cli\layer-migrate.mjs --db <库> --apply --backup <备份文件>          # 真加列 + 回填
+node cli\layer-migrate.mjs --db <库> --restore <备份文件> [--apply]       # 还原（默认干跑）
+node cli\layer-move.mjs --db <库> --layer <层> [--apply] [--force]        # 搬出（主表 → memories_evicted）
+node cli\layer-move.mjs --db <库> --layer <层> --back [--apply]           # 搬回（先核逐行指纹）
+node cli\layer-move.mjs --db <库> --dump before.json / --verify before.json  # 搬前留凭据 / 搬回后对拍
+node cli\band-sentinel.mjs [--db <库>] [--line] [--apply --out r.json]    # 号段哨兵（缺省单机、纯只读）
 ```
 
 ## 召回链：三个开关与设计依据

@@ -1,0 +1,7 @@
+{
+  "_comment": "层名集合与缺省层。换一套层名只改这里：代码里没有任何一处写死 core / recall / archival。default 必须在 layers 里。",
+  "_comment_zh": "column = 记忆表上加的那一列的名字；default = 存量行回填到哪一层（绝不影响行数）。",
+  "column": "layer",
+  "layers": ["core", "recall", "archival"],
+  "default": "recall"
+}

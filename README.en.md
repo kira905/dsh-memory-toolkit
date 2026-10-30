@@ -84,6 +84,82 @@ node tools/verify-recall-chain.mjs                                  # 15 checks:
 node tools/verify-recall-chain.mjs --baseline <pre-change lib dir>  # +2 checks: byte-identical results with the lexicon path off
 ```
 
+## Layered soft eviction + id-band sentinel — new in 0.2.0
+
+Two old problems: memories could only be deleted, never demoted; and when several machines share one
+database, nothing shouted when a machine started writing into another machine's id band. One tool each,
+and **everything ships dry-run / read-only**.
+
+| Tool | What it does | Usage | Default |
+|---|---|---|---|
+| `cli/layer-migrate.mjs` | Adds a `layer` column, backfills existing rows into the "default layer" | `--db <db>` (dry run) · `--apply --backup <file>` · `--restore <backup> [--apply]` | **dry run** — no `--apply`, not one byte written |
+| `cli/layer-move.mjs` | Moves a **whole layer** into the in-database side table `memories_evicted` (nothing deleted); one command out, one command back | `--layer <name> --apply` · `--back --apply` · `--dump <f>` / `--verify <f>` | **dry run** |
+| `cli/band-sentinel.mjs` | Checks whether the *next* new id would land in someone else's band | `--line` · `--apply --out <file>` | **read-only** — even the report file is off by default |
+
+Layer names and the id-band table live in configuration (`memory-engine/config/layers.json`,
+`memory-engine/config/bands.json`). No layer name and no machine name is hard-coded in the code.
+
+### Single machine vs. multiple machines: how it degrades
+
+- **Single machine (default)** = exactly one band in the config. The sentinel reads **only the local
+  database's** `sqlite_sequence` and checks that the next new id falls inside `[base, base+width)`.
+  No ssh, no guessing about peers, no pretending to know another machine. That alone catches the most
+  common incident shape: a merge pushes `seq` up, and every new memory afterwards lands in another
+  machine's band.
+- **Multiple machines (opt-in)** = several bands, and the non-local entries carry
+  `remote: { ssh, node, db? }`. Only then are peers probed — and the remote command, alias and node path
+  all come from the config file.
+- **A peer being unreachable** ⇒ the verdict says "not probed / unreachable" and the **exit code is not 4**
+  (this is the false-red learned the hard way: folding "cannot connect" into "the band is broken" produces
+  daily alarms that bury the real incident). `4` is reserved for "the local database cannot be read".
+  Add `--require-all` if you *want* an unprobed peer to fail (then rc=5).
+
+Verdicts reuse the good half of the production rule: the `seq`-derived next id outside this band ⇒ red;
+rows in a **higher** band ⇒ red (a higher id cannot be produced legally by this machine); rows in a
+**lower** foreign band ⇒ **disclosed, not red** (historical merge-ins; deleting them would delete memories,
+and they do not affect future ids).
+
+### Why nothing touches the database by default
+
+All three commands default to dry-run or read-only, for one reason: they all modify the memory database,
+and this repository is a toolkit — it must not decide *when* and *which* database gets touched. Concretely:
+
+- `layer-migrate --apply` **requires** both `--db` and `--backup`: no explicit path ⇒ no write (so a slip
+  cannot hit the database in your home directory), and no backup ⇒ refuse (backing up before a schema
+  change is a hard gate, not advice).
+- Moving is dry-run by default; before a real move you `--dump` a per-row fingerprint, and after moving
+  back you `--verify` against it.
+- The sentinel is read-only: no writes, no `sqlite_sequence` touch, no VACUUM. To wire it into cron or a
+  self-check, pass `--apply --out <file>` explicitly — and machine-readable content **only goes to the
+  file, never to stdout** (stdout stays for humans).
+
+### Moving is not deleting
+
+`layer-move` moves a whole layer into the **side table** `memories_evicted` inside the same database file.
+Rows are copied verbatim and carry two extra columns: `content_sha` (a fingerprint bound to that row's
+content) and `batch`. Moving back **verifies the fingerprints first**: if even one row in the side table
+was modified, the whole batch is refused (never "half restored, half lost").
+
+- **Hard invariant**: moved rows + remaining rows == rows before the move (asserted inside the transaction,
+  rolled back otherwise).
+- **Cost of choosing a side table over a separate database file**: moved rows still occupy space in the
+  same file — soft eviction saves context and recall surface, not disk; and the side table has no FTS index,
+  so moved rows are invisible to engine recall and can only be fetched with SQL or `--back`. In exchange,
+  moving in and out happens in one transaction, the invariant can be asserted on the spot, and no
+  easy-to-delete sidecar database is left behind.
+- A move that would empty the main table is refused by default (`--force` to proceed): that is usually a
+  mistyped layer name.
+
+**Reproduce these claims:**
+
+```bash
+cd memory-engine
+node test/run.mjs 12-layering       # 21 checks: dry-run zero-write / backfill / idempotence / restore / invariant / fingerprint equality / band red-green controls
+node cli/layer-migrate.mjs --help
+node cli/layer-move.mjs --help
+node cli/band-sentinel.mjs --help
+```
+
 ## 2. Requirements
 
 - **Node.js ≥ 22** (built-in `node:sqlite`, ESM)
