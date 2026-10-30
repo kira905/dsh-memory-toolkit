@@ -50,7 +50,7 @@
 //   唯一源 = 本文件；派生副本 = `tools/sync-host-adapter.mjs` 幂等生成到各包 `lib/host-adapter.mjs`（含源 sha 头）；
 //   守门 = `tools/check-decoupling.mjs` R5 校验副本 sha == 唯一源。
 //
-// 【设备：ROG】｜P0 落地 2026-09-14 ｜ P2-提前批 2026-09-15 ｜ +`SVC.clientModules`（生态面板 boot 解析修复）2026-09-23
+// P0 落地 2026-09-14 ｜ P2-提前批 2026-09-15 ｜ +`SVC.clientModules`（生态面板 boot 解析修复）2026-09-23
 // ｜ 2026-09-28 档 B 切（`UNKNOWN_FAMILY_POLICY`: 'unknown' → 'open'，主人单独批准）
 // ｜ 2026-10-10 空会话误判治本（`classifyTail` 加「整段零回合内事件 ⇒ closed」前置判定；
 //    修「新建空会话静止 10 分钟被判卡死」；真源 `docs\交付报告-卡死自愈空会话误判治本-20261010.md`）
@@ -105,7 +105,7 @@ export const EV = Object.freeze({
   FS_OBSERVED: 'fs/observed',
   TOOLS_PRE_EXECUTE: 'tools/pre-execute',
   // —— P2：0.1.5 新增事件族（取证口径 = 两线 `lib/types/known-event-types.js` 逐行 diff，
-  //    见 docs\长期库大扫除-20260914\adapter-认知缺口取证-20260915.md）。
+  //    依据见项目内部取证笔记）。
   //    ⚠️ **只登记常量，不进任何判定表**：这些名字属"新线上可能出现的事件"，
   //    是否需要据此改判定属档 B（换尺子），本批不做。
   DELIVERABLES_PRESENTED: 'deliverables/presented',
@@ -900,7 +900,7 @@ const CAPABILITY_LINES = Object.freeze({
  * P2 能力档扩展面（**只登记"这条线上有什么"的事实**：承载体 / 失效症状 / 降级出口）。
  * ⚠️ 本表**不含策略** —— 不写"该怎么办"，只写"是什么、会怎样坏、哪个出口可用"；
  *     `fallback` 给的是**出口名**（调用方自行决定用不用），不是自动行为。
- * 取证来源：`docs\长期库大扫除-20260914\adapter-认知缺口取证-20260915.md` +
+ * 取证来源：项目内部取证笔记 +
  *   本批 2026-09-15 两线主包闭包实读（服务名扫描 / settings 导出面 / known-event-types diff）。
  */
 const CAPABILITY_DETAIL = Object.freeze({

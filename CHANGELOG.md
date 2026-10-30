@@ -3,6 +3,15 @@
 本仓的版本按**语义化版本**：改结论/改契约升主版本，加能力升次版本，修错别字与文档订正不升。
 英文摘要见每节末尾的 *English* 行。
 
+## v0.1.2 — 2026-10-30
+
+**内部标识残留清剿**（无 API / 行为契约变化）：
+
+- 注释里残留的内部笔记路径、构建机设备标记一并清掉；`dsh-memory-local` 的 `lib/` 与 `src/` 两份适配层副本
+  改成一致（`memory-engine` 184 项与适配层收敛用例复跑同绿）。
+
+*English: residual internal note paths and build-machine device markers removed from comments; the lib/ and src/ adapter copies stay byte-identical; no behaviour change.*
+
 ## v0.1.1 — 2026-10-30
 
 **部署面补齐 + 用语刷净**（无 API / 行为契约变化）：
