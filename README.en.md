@@ -14,7 +14,7 @@ fixable; the plugin wires it into a session.**
 
 | Directory | What it is | Form |
 |---|---|---|
-| [`memory-engine/`](./memory-engine/README.md) | Memory engine (offline layer): standalone vector store · incremental sync · hash-rotation fallback sweep · hybrid recall (vector + FTS5 + RRF) · document index · startup self-check · local encoding bridge | plain Node ESM + `node:sqlite` |
+| [`memory-engine/`](./memory-engine/README.md) | Memory engine (offline layer): standalone vector store · incremental sync · hash-rotation fallback sweep · hybrid recall (vector + FTS5 + lexicon BM25 + RRF + degraded fixed-top-K + side-channel recall log) · document index · startup self-check · local encoding bridge | plain Node ESM + `node:sqlite` |
 | [`memory-db-tools/`](./memory-db-tools/README.md) | Memory database toolkit: read-only export / six-way audit analysis / structure probe / feature-word probe / persona overlap / board-ledger probe / zero-write proof / new-session briefing | a set of standalone CLIs |
 | [`dsh-memory-local/`](./dsh-memory-local/README.md) | Local memory plugin: a self-maintained fork of upstream `dsh-memory` (cross-session memory + recall prompt section + pointer injection), with build / idempotent deploy / one-command rollback / post-deploy self-check | DSH plugin |
 | [`persona-memory-audit.mjs`](./persona-memory-audit.mjs) | Persona ↔ memory audit: pins down "persona body size" and "memory visibility" and reports red past thresholds | single-file CLI |
@@ -36,6 +36,53 @@ Some files in this repository **share a source with an internal production imple
   in its `config/sim-scan.json`, not buried in code.
 - **License**: see `LICENSE` at the repository root (when a subdirectory carries its own exception, that
   subdirectory's `LICENSE` wins).
+
+## Recall chain: degradation / second (lexicon) path / hit log — new in 0.2.0
+
+Three long-standing recall problems, each with a fix you can switch off in one move. **No shipped
+default changed.**
+
+| Problem | What it does now | Switch | Shipped default |
+|---|---|---|---|
+| An encode timeout/failure used to mean **zero memories injected for that turn** | Queries are truncated to 256 chars; encoding gets a budget (1500 ms default); timeout / throw / empty vector all **degrade to a fixed top-K** (most recently updated first, 8 by default). The result carries `degraded.mode = "fixed-topk"` and `encodeError.name` | `fallbackTopK` / `encodeTimeoutMs` / `--fallback-top-k` / `--encode-timeout-ms` | degradation **always on** (it only exists on the failure path) |
+| Pure vectors are blind to **exact terms**; FTS5 cannot help in Chinese (`unicode61` does not segment CJK) | **Second path**: longest-match segmentation against a jieba dictionary + **BM25** (tf saturation + length normalisation + corpus idf × word specificity), fused with vector/FTS through RRF(k=60) | `enabled` in `memory-engine/dict/lexicon-config.json`, `MEMORY_ENGINE_LEXICON=on/off`, `--lexicon on` | **off** (with it off, results are **byte-identical** to before — see below) |
+| You cannot tell afterwards what was recalled, which row matched, or whether it was any good | **Side-channel JSONL**: query / hit ids / scores / degraded flag / timestamp; byte-based rotation + age pruning, so it cannot grow without bound | point it at a directory: `--recall-log <dir>` or `DSH_MEMORY_RECALL_LOG_DIR`; `DSH_MEMORY_RECALL_LOG=off` disables | **off** (a library should not write files as a side effect of a plain query) |
+
+**Why it is built this way** (long form in [`memory-engine/README.md`](./memory-engine/README.md), section "Design rationale"):
+
+- **Degradation goes by recency, not by padding.** With no query vector there is no semantic signal left;
+  the most likely useful thing is what was written most recently. Three tiers: the source's `recent()` →
+  metadata sorted by `updated_at` → the highest ids in the vector store. Non-empty, deterministic, and
+  pinned rows still excluded.
+- **The lexicon path ships off.** Its gain is "exact words come back"; its cost is "fusion re-ranks".
+  The promise of this repo is "defaults do not change", so it is off and enabled with one config line.
+  Once on, `stats.lexiconStatus` flips from `off` to `ok` and hits appear with `sources: ["vector","lexicon"]`.
+- **The log ships off.** Queries can be private; a library should not persist them on every call. Turn it on
+  by giving a directory, and the bytes / generations / days caps keep it bounded. **Memory text is never
+  logged** — ids and scores only.
+- **Why not reuse the production patch.** On the production side this is a line-anchored replay patch
+  (`patch-*-lexicon.mjs`); that cannot survive a move into a standalone repo. Here it is a module rewritten
+  from behaviour, proven equivalent by fixtures and a before/after diff — not by matching sha256.
+
+**Dictionary size and licence.** `词典.txt` (1,029,582 B) + `词频.txt` (219,541 B) come from
+[jieba](https://github.com/fxsjy/jieba) `extra_dict/dict.txt.small` (MIT) and are bundled under
+`memory-engine/dict/`, about **1.25 MB** in total (`npm pack --dry-run`: tarball **1.1 MB**, unpacked
+**2.8 MB**, **140** files). They are bundled because otherwise the feature is unusable right after
+`npm i`; `MEMORY_ENGINE_DICT_DIR` can point the assets elsewhere if a packager wants them out of the tarball.
+
+Licensing follows **subtree precedence**: `memory-engine/dict/` keeps the upstream **MIT** licence (full text
+and copyright notice in [`dict/LICENSE-词典.md`](./memory-engine/dict/LICENSE-词典.md)), which does **not**
+conflict with the repo-level AGPL-3.0 — MIT and AGPL are compatible, and shipping the notice alongside is
+enough (the same arrangement as the `dsh-memory-local/` fork). Dictionary files are kept byte-for-byte
+(`-text` in `.gitattributes`), so their sha256 can be compared with upstream directly.
+
+**Reproduce the claims:**
+
+```bash
+cd memory-engine
+node tools/verify-recall-chain.mjs                                  # 15 checks: truncation / degradation / lexicon / log / multi-source / CLI
+node tools/verify-recall-chain.mjs --baseline <pre-change lib dir>  # +2 checks: byte-identical results with the lexicon path off
+```
 
 ## 2. Requirements
 
@@ -113,9 +160,13 @@ Free to use and modify for personal, educational and open-source projects. For *
 commercial** use (where AGPL's copyleft does not apply) please open an issue in
 [Issues](https://github.com/kira905/dsh-memory-toolkit/issues) to obtain a **commercial license**.
 
-> **Subtree exception**: `dsh-memory-local/` is a fork of upstream `dsh-memory` (MIT) and that subtree
+> **Subtree exceptions**: `dsh-memory-local/` is a fork of upstream `dsh-memory` (MIT) and that subtree
 > **keeps the upstream MIT license** (see its `package.json` `license` field and `FORK-BASE.json`).
+> `memory-engine/dict/` (dictionary and word-frequency tables) comes from jieba (MIT) and likewise
+> **keeps the upstream MIT license** (see `dict/LICENSE-词典.md`).
 > Everything else is original work, released under AGPL-3.0 + commercial licensing.
+> Subtree licences take precedence: when redistributing the package, the two MIT subtrees need only their
+> original copyright notices; AGPL copyleft does not apply to them.
 
 ## 8. Related repositories
 

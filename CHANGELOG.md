@@ -31,6 +31,18 @@ below 50%. The 184-case regression suite passes unchanged, the export surface is
 flags / defaults / exit codes are unchanged. Internal identifiers were stripped; the seven remaining
 hits are contractual strings (the excluded-directory list and the guard's ignore table).
 
+### 召回链：降级 / 词表第二路 / 命中留痕（K4）
+
+- **查询截断**：引擎侧新增 256 字符上限（原来引擎侧**完全不截**；生产侧那道 512 是插件注入器的配置，不在引擎里）。按码点截，`stats.queryChars / queryCharsUsed / queryTruncated` 如实记录。
+- **编码降级**：编码带预算（默认 1500 ms）。超时 / 抛错 / 空向量 ⇒ 降级成**固定 Top-K**（默认 8 条，按最近改动取，仍排除 pinned），结果带 `degraded.mode = "fixed-topk"` 与 `encodeError = { name, ms }`。**绝不返回空、绝不把异常往上抛**。
+- **词表第二路**（新文件 `lib/lexicon-recall.mjs`）：jieba 词典最长匹配 + **BM25**（tf 饱和 / 长度归一 / 语料 idf × 通用词具体度）+ 进程内缓存与后台预热，与向量、FTS 一起进 RRF(k=60)。开关 = `dict/lexicon-config.json#enabled`（出厂 **false**）/ `MEMORY_ENGINE_LEXICON` / `--lexicon on|off`。关掉时结果与改动前**逐字一致**（夹具对拍 4 条查询 + CLI 旧新对拍）。
+- **命中留痕**（新文件 `lib/recall-log.mjs`）：旁路 JSONL，字段 = 时刻 / query / 命中 id / 分数 / 来源 / 是否降级 / 耗时；**不存记忆正文**。默认不写，给目录才写；`DSH_MEMORY_RECALL_LOG=off` 一键关回；字节（512 KB）→ 轮转（3 代）→ 天数（14 天）三重封口，`keepFiles: 0` 只留当前文件。
+- **词典素材**：`memory-engine/dict/`（`词典.txt` 1.03 MB + `词频.txt` 219 KB + MIT 许可声明 + 开关文件），合计约 **1.25 MB**；`npm pack --dry-run` 实测 tarball **1.1 MB** / 解包 **2.8 MB** / **140** 个文件。素材目录可用 `MEMORY_ENGINE_DICT_DIR` 改位；缺素材时这一路优雅退化为纯向量。
+- **验证**：`memory-engine/test` 184 项**一行未改、全绿**；新增 `tools/verify-recall-chain.mjs`（15 项自带判据，给 `--baseline <改动前 lib>` 则 17 项）；两个新文件行级同源度 **18.5% / 19.5%**。
+- **接口**：只有新增 —— CLI 4 个开关（`--lexicon` / `--lexicon-top-k` / `--lexicon-floor` / `--fallback-top-k` / `--encode-timeout-ms` / `--query-max-chars` / `--recall-log` / `--no-recall-log`）、`recall()`/`recallMulti()` 的新可选入参、`stats` 新字段、`memory-source.recent()`；既有参数、缺省值、退出码语义不变。
+
+*English*: recall chain hardening — 256-char query truncation; an encoding time budget with a **fixed top-K degradation** (never empty, never throws); a lexicon/BM25 second path fused through RRF (off by default, one-line switch, byte-identical results when off); and an opt-in side-channel JSONL recall log with byte/generation/age caps. Dictionary assets (~1.25 MB, jieba · MIT) ship in `memory-engine/dict/`; `npm pack` measures 1.1 MB tarball / 2.8 MB unpacked / 140 files. The 184 existing tests are unchanged and green, and `tools/verify-recall-chain.mjs` adds 15 acceptance checks. Interface changes are additive only.
+
 ## v0.1.3 — 2026-10-30
 
 **主包补 bundle 声明 + 子路径导出面**（修「装完不生效」；无插件行为变化）：

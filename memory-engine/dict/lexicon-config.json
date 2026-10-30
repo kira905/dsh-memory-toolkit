@@ -1,0 +1,11 @@
+{
+  "_note": "词表第二路（稀疏召回）的开关文件。enabled=false（出厂值）时这一路完全不存在，召回结果与没有它逐字节一致；改成 true 即启用，不必改代码（改完下一次调用生效）。",
+  "_keys": "enabled 总开关 · topK 这一路给几条候选 · floor 通用词门限 0~1（越大越只用生僻词，0.3 只滤掉最常见的那批） · ttlMs 索引缓存寿命(ms) · k1/b BM25 的 tf 饱和与长度归一键",
+  "_switch": "临时开关：环境变量 MEMORY_ENGINE_LEXICON=on|off（优先级高于本文件）；调用方也可以显式传 lexiconEnabled。",
+  "enabled": false,
+  "topK": 20,
+  "floor": 0.3,
+  "ttlMs": 600000,
+  "k1": 1.2,
+  "b": 0.75
+}

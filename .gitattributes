@@ -4,3 +4,5 @@
 *.json text eol=lf
 *.md text eol=lf
 *.yml text eol=lf
+# 词典/词频/许可声明都是 jieba 上游的原始数据：按字节原样保留（不做换行归一），便于与上游 sha256 对拍
+memory-engine/dict/* -text

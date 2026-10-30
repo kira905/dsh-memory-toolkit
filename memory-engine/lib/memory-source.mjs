@@ -21,6 +21,7 @@ const STATEMENT_SQL = {
   byId: 'SELECT id, text, tags, pinned, created_at, updated_at FROM memories WHERE id = ?',
   allTexts: 'SELECT id, text FROM memories ORDER BY id',
   allTags: 'SELECT id, tags, updated_at FROM memories',
+  recent: 'SELECT id FROM memories ORDER BY updated_at DESC, id DESC LIMIT ?',
 };
 
 /** FTS5 补位：中文连续串几乎不可用，只补标签/英文/数字。 */
@@ -91,6 +92,9 @@ export function openMemorySource(dbPath) {
     allTexts: () => q.allTexts.all().map((r) => ({ id: Number(r.id), text: r.text })),
 
     allTags: () => q.allTags.all().map((r) => ({ id: Number(r.id), tags: r.tags })),
+
+    /** 最近改动的若干条（降级兜底用：编码失败时按这个顺序给固定 Top-K，不依赖向量）。 */
+    recent: (limit) => q.recent.all(Math.max(1, Math.trunc(Number(limit) || 1))).map((r) => ({ id: Number(r.id) })),
 
     ftsSearch(matchExpr, limit) {
       try {

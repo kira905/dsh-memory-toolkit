@@ -40,7 +40,7 @@ Test-Path "$env:APPDATA\npm\dsh-memory-summary.CMD"                           # 
 
 | 目录 | 是什么 | 形态 |
 |---|---|---|
-| [`memory-engine/`](./memory-engine/README.md) | 记忆引擎（离线层）：独立矢量库 · 增量同步 · 兜底 hash 轮转 · 混合召回（向量 + FTS5 + RRF） · 文档索引 · 启动自检 · 本地编码桥 | 纯 Node ESM + `node:sqlite` |
+| [`memory-engine/`](./memory-engine/README.md) | 记忆引擎（离线层）：独立矢量库 · 增量同步 · 兜底 hash 轮转 · 混合召回（向量 + FTS5 + 词表 BM25 + RRF + 编码降级兜底 + 旁路留痕） · 文档索引 · 启动自检 · 本地编码桥 | 纯 Node ESM + `node:sqlite` |
 | [`memory-db-tools/`](./memory-db-tools/README.md) | 记忆库工具集：只读导出 / 六项体检分析 / 结构探针 / 特征词探针 / 与 persona 的重合度 / 看板账本只读探针 / 零改动自证 / 新会话开工简报 | 一组独立 CLI |
 | [`dsh-memory-local/`](./dsh-memory-local/README.md) | 本地记忆插件：上游 `dsh-memory` 的自持 fork（跨会话持久记忆 + 召回提示段 + 指针注入链），带构建 / 幂等部署 / 一键回滚 / 部署后自检 | DSH 插件 |
 | [`persona-memory-audit.mjs`](./persona-memory-audit.mjs) | persona ↔ 记忆体检：把「persona 正文体积」与「记忆可见率」两项指标固定下来，超阈值即报红 | 单文件 CLI |
@@ -54,6 +54,40 @@ Test-Path "$env:APPDATA\npm\dsh-memory-summary.CMD"                           # 
 - **这意味着**：本仓是那套实现的**提炼导出** —— **既不是逐字副本，也不是完全重写的独立实现**。拿单个文件当"独立参考实现"读之前，请先跑下面的判据。
 - **怎么复跑**：同源度扫描器见 `dsh-quality-toolkit` 的 `dsh-sim-scan.mjs`（`--repo <本仓> --prod-root <参照根>`）；分档阈值与口径写在它的 `config/sim-scan.json` 里，不藏在代码里。
 - **许可**：本仓许可见仓根 `LICENSE`（有子树例外时以子树 `LICENSE` 为准）。
+
+## 召回链：降级 / 词表第二路 / 命中留痕（0.2.0 新增）
+
+召回有三类老毛病，这一版各给一条**可一键关回**的解法；出厂默认一条都没改。
+
+| 毛病 | 现在的做法 | 开关 | 出厂 |
+|---|---|---|---|
+| 编码超时/失败 ⇒ 那一轮**一条记忆都不注入** | 查询先截断到 256 字符；编码带预算（默认 1500 ms），超时 / 抛错 / 空向量一律**降级成固定 Top-K**（按最近改动取，条数默认 8），结果里带 `degraded.mode = "fixed-topk"` 与 `encodeError.name` | `fallbackTopK` / `encodeTimeoutMs` / `--fallback-top-k` / `--encode-timeout-ms` | 降级**常开**（只作用于失败路径，成功路径一字不改） |
+| 纯向量对**精确词**不敏感；中文又走不了 FTS5（`unicode61` 不切中文） | **词表第二路**：jieba 词典最长匹配切词 + **BM25**（tf 饱和 + 文档长度归一 + 语料内 idf × 通用词具体度），与向量、FTS 一起进 RRF(k=60) | `memory-engine/dict/lexicon-config.json` 的 `enabled`、`MEMORY_ENGINE_LEXICON=on/off`、`--lexicon on` | **关**（关掉时结果与改动前**逐字节一致**，见下） |
+| 召回了什么、命中了哪条、准不准，事后无从判断 | **旁路 JSONL**：query / 命中 id / 分数 / 是否降级 / 时刻；按字节轮转 + 天数清理，不无限增长 | 给目录：`--recall-log <目录>` 或 `DSH_MEMORY_RECALL_LOG_DIR`；`DSH_MEMORY_RECALL_LOG=off` 一键关回 | **不写**（库不该在纯查询里偷偷落盘） |
+
+**为什么这么设计**（完整版见 [`memory-engine/README.md`](./memory-engine/README.md) 的「设计依据」）：
+
+- **降级用「最近改动」而不是随便凑数**：拿不到向量时，语义相关已无从计算；此时最可能的"有用"是刚写进来的东西。兜底三档依次是数据源直给的 `recent()` → 元数据按 `updated_at` 降序 → 向量表里 id 最大的几条，**保证非空、顺序确定、仍排除 pinned**。
+- **词表默认关**：它的收益是"精确词多捞回来一截"，代价是"两路融合会重排名次"。本仓对外的承诺是默认行为不改 ⇒ 出厂关、由使用方一行配置打开。打开后 `stats.lexiconStatus` 从 `off` 变 `ok`，命中里出现 `sources: ["vector","lexicon"]`。
+- **留痕默认不写**：query 可能是隐私内容，库不该在纯查询里落盘；要判"召回准不准"就显式给目录，且字节/份数/天数三重封口。实际记录里**不存记忆正文**，只存 id 与分数。
+- **为什么不复用生产那份补丁**：生产侧是"按行号锚点重放"的补丁（`patch-*-lexicon.mjs`），搬进独立仓必碎；本仓是按行为重写的模块，靠夹具与旧版对拍证明等价，而不是靠 sha 相同。
+
+**词典体积与许可**：`词典.txt`（1,029,582 B）+ `词频.txt`（219,541 B）来自
+[jieba](https://github.com/fxsjy/jieba) 的 `extra_dict/dict.txt.small`（MIT），随包内嵌在
+`memory-engine/dict/`，合计约 **1.25 MB**（`npm pack --dry-run` 实测：整包 tarball **1.1 MB** / 解包 **2.8 MB** / **140** 个文件）。
+**为什么要内嵌**：不内嵌的话 `npm i` 完这一路直接不可用（要么首次运行去联网拉，要么用户自己找词典）。素材目录可用 `MEMORY_ENGINE_DICT_DIR` 指到别处（打包方嫌大可以把它们挪出包，代价是这一路默认不可用）。
+
+许可按**子树优先**：`memory-engine/dict/` 保持上游 **MIT**（全文与版权声明见 [`dict/LICENSE-词典.md`](./memory-engine/dict/LICENSE-词典.md)），
+与仓级 AGPL-3.0 **不冲突** —— MIT 与 AGPL 兼容，分发时把那份版权声明原样带上即可（与本仓 `dsh-memory-local/` fork 的上游 MIT 同一口径）。
+词典/词频按字节原样保留（`.gitattributes` 里 `-text`），可与上游 sha256 直接对拍。
+
+**怎么复现这些结论**：
+
+```bash
+cd memory-engine
+node tools/verify-recall-chain.mjs                                  # 15 项：截断 / 降级 / 词表 / 留痕 / 多来源 / CLI
+node tools/verify-recall-chain.mjs --baseline <改动前的 lib 目录>    # 追加 2 项：开关关掉时与旧版逐字对拍
+```
 
 ## 二、环境要求
 
@@ -129,7 +163,9 @@ node memory-db-tools/audit-verify-unchanged.mjs --baseline ./_audit/memories.jso
 
 > **子树例外**：`dsh-memory-local/` 是上游 `dsh-memory`（MIT）的 fork，
 > 该子树**保持上游 MIT 许可**（见其 `package.json` 的 `license` 字段与 `FORK-BASE.json`）；
-> 其余目录（引擎、工具链、共用件）为本项目原创，按 AGPL-3.0 + 商业授权双许可发布。
+> `memory-engine/dict/`（词典与词频）来自 jieba（MIT），同样**保持上游 MIT**（见 `dict/LICENSE-词典.md`）；
+> 其余目录（引擎代码、工具链、共用件）为本项目原创，按 AGPL-3.0 + 商业授权双许可发布。
+> 子树许可优先：分发整包时，上述两个 MIT 子树按 MIT 原样附版权声明即可，不适用 AGPL 的传染条款。
 
 ## 八、相关仓
 
