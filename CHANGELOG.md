@@ -54,7 +54,7 @@ the official `dsh-memory`. 0.1.2 stays on npm for rollback.*
 **部署面补齐 + 用语刷净**（无 API / 行为契约变化）：
 
 - `dsh-memory-local/` 部署侧支持 `.modules.yaml` profiles（主包 0.2.0-rc.x 的文件布局），新增「全新安装」分支，备份目录改为按需创建。
-- 内部用语刷净：构建机的设备标记改为中性写法（`【设备：ROG】`），文档标签示例由设备名改为通用词（`工作记录`）；对应单测断言同步更新，`memory-engine` 184 项全绿。
+- 内部用语刷净：构建机的设备标记改为中性写法（原来的构建机设备标记），文档标签示例由设备名改为通用词（`工作记录`）；对应单测断言同步更新，`memory-engine` 184 项全绿。
 - 本版起 `npm publish` 走 `next` 标签、稳定后再挂 `latest`。
 
 *English: deploy side now supports `.modules.yaml` profiles (host 0.2.0-rc.x) with a fresh-install branch and lazy backup-dir creation; internal build-machine wording scrubbed (no API/behaviour change).*
