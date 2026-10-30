@@ -3,6 +3,43 @@
 本仓的版本按**语义化版本**：改结论/改契约升主版本，加能力升次版本，修错别字与文档订正不升。
 英文摘要见每节末尾的 *English* 行。
 
+## v0.1.3 — 2026-10-30
+
+**主包补 bundle 声明 + 子路径导出面**（修「装完不生效」；无插件行为变化）：
+
+根因是**声明层错位**：`dsh-memory-local/` 的 bundle 声明写在私有子包自己的 `package.json` 里，主包没有 `dsh.bundle`
+⇒ `dsh plugin add` 只打一行 `declares no dsh.bundle` 警告、profile 的 `dsh.profile.bundles` 不变，**装了等于没装**
+（rc 仍是 0，所以用户会当成装好了）。本版把声明提到主包根，并给出宿主 loader（ESM `import()`）能解析的子路径。
+
+- 新增仓根 `cordis.patch.yml`：`id: kira905-memory`（**不是** `memory` —— 那个 id 归官方 `dsh-memory`，撞 id 会静默顶掉或启动抛错）、
+  `name: '@kira905/dsh-memory-toolkit/dsh-memory-local'`；`config` 与子包那份逐键相同（含 `path`）。
+- 主包 `package.json` 新增 `dsh.bundle.patch = ./cordis.patch.yml`。
+- 主包 `package.json` 新增 `exports`：`./dsh-memory-local` → `./dsh-memory-local/lib/index.js`（**文件**，不是目录）、
+  `./package.json` → `./package.json`；**没有** `"."` 条目（主包 `lib/` 没有 `index.js`，包根导入本来就不通）。
+- `files` 补上 `cordis.patch.yml`（否则 tarball 里没有它，装了照样不生效）。
+
+**迁移四条（"收窄包面"变更 —— 只升 patch 号，但请读一遍）**：
+
+1. **从包根导入的写法会失败**（`import '@kira905/dsh-memory-toolkit'`）—— 旧版本来也不通（没有 `main` / `exports`），
+   本版给它一个**明确的** `ERR_PACKAGE_PATH_NOT_EXPORTED`，而不是 "Cannot find package …/index.js" 这种像"文件丢了"的报错。
+   没有可迁移的既有用法。
+2. **子路径导入改走 `exports`**：`@kira905/dsh-memory-toolkit/dsh-memory-local` 从 0.1.2 的
+   `ERR_UNSUPPORTED_DIR_IMPORT`（ESM 不认目录）变成**可用**；反过来，深路径
+   `@kira905/dsh-memory-toolkit/dsh-memory-local/lib/index.js` 从 0.1.2 的"可达"变成 **`ERR_PACKAGE_PATH_NOT_EXPORTED`**。
+   踩到的把 specifier 换成映射后的 `…/dsh-memory-local`（**不要**反过来删 `exports` 图省事 —— 那会把 ESM 这条路重新掐死）。
+3. **与官方 `dsh-memory` 二选一**：本包定位是**替代实现**（`dsh-memory-local` 是 `dsh-memory@0.1.0` 的 fork），两者抢同一个
+   "记忆"位置。装之前读 `<profile>/package.json` 的 `dsh.profile.bundles`，含 `dsh-memory` 就**别装**（反之亦然）；
+   要换实现先把另一个摘掉，别让两份同时加载。
+4. **旧版仍在 npm、可回退**：`0.1.2` 及以前都在，`npm i @kira905/dsh-memory-toolkit@0.1.2` 可回退；回退后深路径恢复可达，
+   同时"不挂载"的老行为也回来（不坏，但等于白装）。
+
+*English: 0.1.3 declares the bundle at the package root (new `cordis.patch.yml`, `id: kira905-memory`) and adds an
+`exports` map that points the `./dsh-memory-local` subpath at a real file, so `dsh plugin add` mounts the fork instead
+of printing "declares no dsh.bundle". No plugin behaviour changed. This narrows the package surface: the deep
+`…/dsh-memory-local/lib/index.js` path is no longer importable (use the mapped subpath), the package root still has no
+entry point (now with an explicit `ERR_PACKAGE_PATH_NOT_EXPORTED`), and this package replaces — never coexists with —
+the official `dsh-memory`. 0.1.2 stays on npm for rollback.*
+
 ## v0.1.2 — 2026-10-30
 
 **内部标识残留清剿**（无 API / 行为契约变化）：

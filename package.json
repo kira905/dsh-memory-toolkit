@@ -1,6 +1,6 @@
 {
   "name": "@kira905/dsh-memory-toolkit",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": false,
   "publishConfig": {
     "access": "public"
@@ -30,12 +30,22 @@
   "engines": {
     "node": ">=22"
   },
+  "exports": {
+    "./dsh-memory-local": "./dsh-memory-local/lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
   "bin": {
     "dsh-memory-audit": "./persona-memory-audit.mjs",
     "dsh-memory-summary": "./memory-db-tools/list-memory-summary.mjs",
     "dsh-memory-export": "./memory-db-tools/audit-export.mjs"
   },
   "files": [
+    "cordis.patch.yml",
     "memory-engine/",
     "memory-db-tools/",
     "dsh-memory-local/",

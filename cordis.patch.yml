@@ -1,0 +1,32 @@
+# Package-root bundle patch for @kira905/dsh-memory-toolkit.
+#
+# Why this file exists at the package root (0.1.3): the fork's own patch lives
+# inside the private sub-package `dsh-memory-local/`, so `dsh plugin add`
+# reported "declares no dsh.bundle" and mounted nothing. The declaration now
+# sits next to `dsh.bundle.patch` in the root package.json.
+#
+# `id` is deliberately NOT `memory`: that id belongs to the official
+# `dsh-memory` bundle. Two entries carrying the same id either override each
+# other silently (loader 1.0.x) or abort boot (older loaders), and
+# `--dump-config` prints both rows with rc=0 either way. One memory slot, one
+# implementation: install this package OR `dsh-memory`, never both.
+#
+# `config` is a deliberate full copy of `dsh-memory-local/cordis.patch.yml`
+# (a patch replaces the targeted row's whole config, so a row cannot inherit
+# keys from another file). `path` intentionally has no code-side default: a
+# durable store of user facts must not land in whatever directory the harness
+# happened to start in. The deployment value lives here, beside the row,
+# resolved through the loader's `dshHomePath` so every profile on this machine
+# shares one memory file.
+
+- insert:
+    - id: kira905-memory
+      name: '@kira905/dsh-memory-toolkit/dsh-memory-local'
+      config:
+        path: !!js dshHomePath('memory/memory.db')
+        promptRecentCount: 10
+        promptMaxChars: 2000
+        maxTextChars: 2000
+        searchLimitDefault: 10
+        searchLimitMax: 50
+        promptOrder: 50
