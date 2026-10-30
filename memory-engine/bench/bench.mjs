@@ -194,7 +194,7 @@ async function main() {
     batchSize: flags.batch ? Number(flags.batch) : undefined,
   });
   if (!fs.existsSync(config.memoryDb)) {
-    throw new Error(`记忆库不存在：${config.memoryDb}（本卡须用 ROG 生产库的只读副本，勿指向生产库）`);
+    throw new Error(`记忆库不存在：${config.memoryDb}（须用生产库的只读副本，勿指向生产库）`);
   }
   console.log('=== 记忆引擎 v2 · 离线层基准 ===');
   console.log(`主机     : ${os.hostname()} · ${os.cpus().length} 核 ${(os.cpus()[0] || {}).model}`);

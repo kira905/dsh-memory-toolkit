@@ -19,7 +19,7 @@
 |---|---|---|---|---|---|
 | `audit-export.mjs` | 第 1 站：把记忆库全量导成 `memories.json`，给下面所有探针当数据源 | `node audit-export.mjs` | `--db` `<库路径>`、`--out` `<文件>`、`--force`（覆盖已存在）、`--json`、`--quiet` | **只读库**（可写 `--out`） | `memories.json` + 统计（TOTAL/PINNED/CHARS/设备分布） |
 | `audit-analyze.mjs` | 第 2 站：六项分析——首行清单 / 漏标设备候选 / 重复对 / 过期关键词 / pinned 全文 / 统计 | `node audit-analyze.mjs` | `--in` `<memories.json>`、`--out` `<目录>`、`--json`、`--quiet` | 只读输入（可写 6 个产物） | `list-lines.txt`、`list-nodev.txt`、`dup-pairs.txt`、`keyword-hits.txt`、`pinned-full.txt`、`stats.json` |
-| `audit-struct-probe.mjs` | 结构异常：设备标不在已知清单（OTHER）
+| `audit-struct-probe.mjs` | 结构异常：设备标不在「已知设备名」清单（OTHER）+ 一条里两个设备标（DOUBLE）+ 长度分布 | `node audit-struct-probe.mjs` | `--in` `<memories.json>`、`--top` `<n>`、`--json` | **只读，不写文件** | 标准输出（OTHER / DOUBLE / PINNED_CHARS / TOP_LONG_NONPINNED） |
 | `audit-hit-probe.mjs` | 给 id 列表，报每条命中了哪些机器特征词（自证「漏标设备」判据站得住） | `node audit-hit-probe.mjs --ids 40,46,67` | `--ids`（必填）、`--in`、`--json` | **只读，不写文件** | 标准输出（每行 `#id [命中词] 首行`） |
 | `audit-dump-ids.mjs` | 按 id 取记忆全文（分批精读，规避 stdout 编码/截断坑） | `node audit-dump-ids.mjs --ids 40,46,67` | `--ids`（必填）、`--out`、`--stdout`、`--db`、`--json` | **只读库**（可写 `--out`） | `dump-ids-<本地时间>.txt`（默认临时目录）或 stdout |
 | `audit-persona-overlap.mjs` | 量化每条记忆有多少比例已出现在 persona 里（找「焊接残留」条目） | `node audit-persona-overlap.mjs` | `--db`、`--persona`、`--out`、`--top` `<n>`、`--json` | **只读库与 persona**（可写 `--out`） | `persona-overlap.json` + 覆盖比 Top N / pinned 覆盖比 |
@@ -48,6 +48,34 @@ node $T\audit-verify-unchanged.mjs --baseline "$W\memories.json" --expect-unchan
 - **漏标设备判据（机器特征词）**：`audit-analyze.mjs` 的 `MACHINE_RE` 与 `audit-hit-probe.mjs` 的 `MACHINE_PATTERNS`（两处需同批维护）。
 - **过期关键词表**：`audit-analyze.mjs` 的 `STALE_KEYWORDS`（19 组；过期项增减改这一处）。
 - **重复对阈值**：`audit-analyze.mjs` 的 `analyze(mems, { shingle, minShared, jacThreshold })`（默认 6-gram / 共享 shingle ≥ 6 / Jaccard ≥ 0.15）。
+
+### 已知设备名（改这里，不是改代码）
+
+`audit-export.mjs` 的设备分布统计与 `audit-struct-probe.mjs` 的 OTHER 判据，都要知道「哪些设备名算已知」。
+**代码里不写死任何机器名**（不带任何真实机器名，换机器不用改代码）。优先级从高到低：
+
+1. **环境变量** `MEMORY_DB_AUDIT_DEVICES` —— 逗号或空格分隔，例如
+   `$env:MEMORY_DB_AUDIT_DEVICES = 'laptop,desktop'`（临时起效，适合偶尔跑一次）；
+2. **配置文件** `memory-engine/config/audit-devices.json` 里的 `devices` 数组 —— 随包发布，改它长期生效：
+
+   ```json
+   { "devices": ["alpha", "beta"] }
+   ```
+
+3. 两者都没给时退回**内置中性示例名** `alpha` / `beta`（只是让工具装完能跑，不代表任何真实机器）。
+
+匹配规则：只看 `【设备：X】` 里的 X 那段，拿名单里每个名字做**大小写敏感**的子串匹配；
+名单不认识的一律归 **OTHER**（结构探针会列出来让人复核）；名单里出现 `NONE` / `OTHER` / `DOUBLE`
+（统计结果里的固定键）或形态不合法的名字会被剔掉，并在 stderr 打一行警告。
+名单为空或全不合法 ⇒ 退回内置缺省（不是「全都算 OTHER」）。
+
+> ⚠️ **别把本机真实设备名写进仓里那份 `audit-devices.json`** —— 它会随包发布到公开仓。
+> 本机跑体检要认真名，用环境变量（或写进自己的 PowerShell profile / 启动脚本），
+> 让仓里的那份始终是**中性洁本**。反过来说：缺省配置不认识你的机器名时，
+> 全部设备标都会落进 OTHER —— 这是**故意**的（宁可让你看见一堆"不认识"，也不把机器名刻进代码）。
+>
+> 统计输出（`DEV={...}`）的形状固定 = 名单里每个名字一个计数 + `NONE` / `OTHER` / `DOUBLE` 三个固定键；
+> 名单换了，键名跟着换，**键的数量与顺序规则不变**。改名单不会改动任何 CLI 参数 / 缺省值 / 退出码。
 
 ### 自检
 

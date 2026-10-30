@@ -3,6 +3,7 @@
 // 固化自早期临时脚本（2026-09-25 体检工具链固化）
 //   · 去硬编码：USERPROFILE / ~\.dsh → DSH_HOME 环境变量或家目录动态解析（见 resolveDshHome）
 //   · 输出可传参：--out <file>，默认落系统临时目录（不是生产路径）
+//   · 设备统计的「已知设备名」也不写死：见 lib/known-devices.mjs（配置 + 环境变量 + 中性缺省）
 //   · 加 --help / --self-test · 收尾一律 process.exitCode（禁 process.exit）
 // 用途：把 memory.db 的 memories 表全量导出为 memories.json —— 下游探针（audit-analyze / audit-struct-probe /
 //       audit-hit-probe / audit-verify-unchanged）的唯一数据源。
@@ -14,6 +15,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
+import { BUILTIN_DEVICES, knownDeviceKey, loadKnownDevices } from "./lib/known-devices.mjs";
 
 export const SELF = fileURLToPath(import.meta.url);
 export const TOOL = path.basename(SELF);
@@ -115,36 +117,42 @@ export function readMemories(dbPath) {
   }
 }
 
-export function deviceStats(rows) {
-  const dev = { ROG: 0, TUF: 0, NONE: 0, OTHER: 0, DOUBLE: 0 };
+export function deviceStats(rows, devices = loadKnownDevices().devices) {
+  const dev = {};
+  for (const name of devices) dev[name] = 0;
+  dev.NONE = 0;
+  dev.OTHER = 0;
+  dev.DOUBLE = 0;
   for (const r of rows) {
     const m = r.text.match(/【设备[：:]\s*([^】]*)】/g);
     if (!m) dev.NONE++;
     else if (m.length > 1) dev.DOUBLE++;
-    else if (/ROG/.test(m[0])) dev.ROG++;
-    else if (/TUF/.test(m[0])) dev.TUF++;
-    else dev.OTHER++;
+    else {
+      const key = knownDeviceKey(m[0], devices);
+      if (key) dev[key]++;
+      else dev.OTHER++;
+    }
   }
   return dev;
 }
 
-export function summarize(rows) {
+export function summarize(rows, devices = loadKnownDevices().devices) {
   return {
     total: rows.length,
     pinned: rows.filter((r) => r.pinned).length,
     chars: rows.reduce((s, r) => s + r.text.length, 0),
-    dev: deviceStats(rows),
+    dev: deviceStats(rows, devices),
     pinnedIds: rows.filter((r) => r.pinned).map((r) => r.id),
     tsSampleFirst: rows.slice(0, 2).map((r) => [r.id, r.created_at, r.updated_at]),
     tsSampleLast: rows.slice(-2).map((r) => [r.id, r.created_at, r.updated_at]),
   };
 }
 
-export function writeExport(dbPath, outFile) {
+export function writeExport(dbPath, outFile, devices = loadKnownDevices().devices) {
   const rows = readMemories(dbPath);
   fs.mkdirSync(path.dirname(path.resolve(outFile)), { recursive: true });
   fs.writeFileSync(outFile, JSON.stringify(rows), "utf8");
-  return { rows, stats: summarize(rows) };
+  return { rows, stats: summarize(rows, devices) };
 }
 
 // ---------- CLI ----------
@@ -183,6 +191,9 @@ export function main(argv = process.argv.slice(2)) {
 
   const dbPath = typeof a.db === "string" ? path.resolve(a.db) : DEFAULT_DB;
   const outFile = typeof a.out === "string" ? path.resolve(a.out) : DEFAULT_OUT;
+  // 已知设备名：配置 / 环境变量 / 中性缺省（见 lib/known-devices.mjs）。警告走 stderr，不动 stdout 结构。
+  const known = loadKnownDevices();
+  for (const w of known.warnings) console.error(`[${TOOL}] 警告：${w}`);
   if (!fs.existsSync(dbPath)) {
     console.error(`[${TOOL}] 记忆库不存在：${dbPath}（可用 --db 指定）`);
     return 3;
@@ -193,7 +204,7 @@ export function main(argv = process.argv.slice(2)) {
     return 3;
   }
 
-  const { stats } = writeExport(dbPath, outFile);
+  const { stats } = writeExport(dbPath, outFile, known.devices);
   if (a.json) {
     console.log(JSON.stringify({ db: dbPath, out: outFile, ...stats }, null, 1));
   } else if (a.quiet !== true) {
@@ -209,6 +220,10 @@ export function main(argv = process.argv.slice(2)) {
 }
 
 // ---------- self-test（无副作用：合成临时库 + 临时目录） ----------
+// 夹具自带的「已知设备名」是中性示例名，且**显式传给被测函数**：自检不与机器配置耦合
+// （用户把配置改成别的名字，自检不许跟着红）。
+export const FIXTURE_DEVICES = Object.freeze(["alpha", "beta"]);
+
 export function selfTest() {
   const t = makeAsserter();
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "audit-export-selftest-"));
@@ -224,25 +239,54 @@ export function selfTest() {
         "INSERT INTO memories (id, text, tags, pinned, created_at, updated_at) VALUES (?,?,?,?,?,?)",
       );
       ins.run(1, "【设备：本机】第一条测试记忆，路径 <workspace>", "t1", 1, 1000, 1000);
-      ins.run(2, "【设备：TUF】第二条测试记忆", "t2", 0, 2000, 2000);
+      ins.run(2, "【设备：beta】第二条测试记忆", "t2", 0, 2000, 2000);
       ins.run(3, "第三条无设备标记忆", "", 0, 3000, 3000);
+      ins.run(4, "【设备：alpha】第四条带已知设备标", "t4", 0, 4000, 4000);
     } finally {
       db.close();
     }
 
     const before = sha256File(dbFile);
-    const { rows, stats } = writeExport(dbFile, outFile);
+    const { rows, stats } = writeExport(dbFile, outFile, FIXTURE_DEVICES);
 
-    t.eq(rows.length, 3, "导出条数");
+    t.eq(rows.length, 4, "导出条数");
     t.eq(rows[0].pinned, true, "pinned 归一为 boolean");
     t.eq(stats.pinned, 1, "pinned 计数");
-    t.eq(stats.dev.ROG, 1, "设备标 ROG 计数");
-    t.eq(stats.dev.TUF, 1, "设备标 TUF 计数");
+    t.eq(stats.dev.alpha, 1, "已知设备标 alpha 计数");
+    t.eq(stats.dev.beta, 1, "已知设备标 beta 计数");
     t.eq(stats.dev.NONE, 1, "无设备标计数");
+    t.eq(stats.dev.OTHER, 1, "名单外的设备标计入 OTHER");
+    t.eq(stats.dev.DOUBLE, 0, "没有双标条目 ⇒ DOUBLE 0");
+    t.eq(Object.keys(stats.dev).join(","), "alpha,beta,NONE,OTHER,DOUBLE", "设备统计键 = 名单顺序 + 三个固定键");
     t.ok(fs.existsSync(outFile), "产物文件已生成（含自动 mkdir 父目录）");
     const back = JSON.parse(fs.readFileSync(outFile, "utf8"));
-    t.eq(back.length, 3, "产物 JSON 可解析且条数一致");
+    t.eq(back.length, 4, "产物 JSON 可解析且条数一致");
     t.eq(back[2].text, "第三条无设备标记忆", "产物内容一致");
+
+    // 「已知设备名」的来源优先级：环境变量 > 配置文件 > 内置中性缺省
+    const cfgFile = path.join(tmp, "audit-devices.json");
+    fs.writeFileSync(cfgFile, JSON.stringify({ devices: ["gamma"] }), "utf8");
+    t.eq(loadKnownDevices({ env: {}, file: cfgFile }).devices.join(","), "gamma", "配置文件能给名单");
+    t.eq(loadKnownDevices({ env: {}, file: cfgFile }).source, "config", "来源标记 = config");
+    t.eq(
+      loadKnownDevices({ env: { MEMORY_DB_AUDIT_DEVICES: "a1, b2" }, file: cfgFile }).devices.join(","),
+      "a1,b2",
+      "环境变量覆盖配置文件",
+    );
+    t.eq(
+      loadKnownDevices({ env: {}, file: path.join(tmp, "no-such.json") }).devices.join(","),
+      BUILTIN_DEVICES.join(","),
+      "配置缺失 ⇒ 内置中性缺省（不报错）",
+    );
+    t.eq(
+      loadKnownDevices({ env: {}, config: { devices: [] } }).devices.join(","),
+      BUILTIN_DEVICES.join(","),
+      "空名单 ⇒ 退回内置缺省",
+    );
+    t.ok(
+      loadKnownDevices({ env: {}, config: { devices: ["ok", "OTHER"] } }).warnings.length > 0,
+      "名单里撞上固定键（OTHER）⇒ 剔掉并给警告",
+    );
 
     // 自证只读
     t.eq(sha256File(dbFile), before, "合成库 sha256 前后一致（未写库）");

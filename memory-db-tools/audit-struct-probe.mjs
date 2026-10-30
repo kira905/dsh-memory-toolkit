@@ -3,14 +3,18 @@
 // 固化自早期临时脚本（2026-09-25 体检工具链固化）
 //   · 数据源改为 --in <memories.json>（默认系统临时目录，不再写死 _tmp 路径）
 //   · 加 --help / --self-test / --json · 收尾 process.exitCode
-// 用途：看两类结构异常 —— ①【设备：X】写了但既不含 ROG 也不含 TUF（OTHER）②一条里写了两个设备标（DOUBLE）；
+// 用途：看两类结构异常 —— ①【设备：X】写了但 X 不在「已知设备名」清单里（OTHER）
+//       ②一条里写了两个设备标（DOUBLE）；
 //       顺带给出 pinned 各条字符数与最长的非 pinned 条目（persona 瘦身候选）。
+// 已知设备名不是硬编码：见 lib/known-devices.mjs（配置 memory-engine/config/audit-devices.json
+//   / 环境变量 MEMORY_DB_AUDIT_DEVICES / 内置中性示例名 alpha、beta）。
 // 只读：只读 memories.json，不碰 memory.db，不写任何文件（stdout only）。
 
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { BUILTIN_DEVICES, isKnownDeviceTag, loadKnownDevices } from "./lib/known-devices.mjs";
 
 export const SELF = fileURLToPath(import.meta.url);
 export const TOOL = path.basename(SELF);
@@ -87,7 +91,7 @@ export function readJson(p) {
 }
 
 // ---------- 核心逻辑 ----------
-export function structReport(mems, topLong = 12) {
+export function structReport(mems, topLong = 12, devices = loadKnownDevices().devices) {
   const other = [];
   const dbl = [];
   for (const m of mems) {
@@ -96,7 +100,7 @@ export function structReport(mems, topLong = 12) {
       dbl.push(`${m.id}: ${g.map((s) => s.trim()).join(" ")}`);
       continue;
     }
-    if (g.length === 1 && !/ROG|TUF/.test(g[0])) other.push(`${m.id}: ${g[0]}`);
+    if (g.length === 1 && !isKnownDeviceTag(g[0], devices)) other.push(`${m.id}: ${g[0]}`);
   }
   const pinnedChars = mems.filter((m) => m.pinned).map((m) => `${m.id}:${m.text.length}`);
   const topLongNonPinned = mems
@@ -143,8 +147,11 @@ export function main(argv = process.argv.slice(2)) {
     return 3;
   }
   const top = typeof a.top === "string" ? Number(a.top) : 12;
+  // 已知设备名：配置 / 环境变量 / 中性缺省（见 lib/known-devices.mjs）。警告走 stderr，不动 stdout 结构。
+  const known = loadKnownDevices();
+  for (const w of known.warnings) console.error(`[${TOOL}] 警告：${w}`);
   const mems = readJson(inFile);
-  const r = structReport(mems, Number.isFinite(top) && top > 0 ? top : 12);
+  const r = structReport(mems, Number.isFinite(top) && top > 0 ? top : 12, known.devices);
 
   if (a.json) {
     console.log(JSON.stringify({ in: inFile, ...r }, null, 1));
@@ -159,6 +166,9 @@ export function main(argv = process.argv.slice(2)) {
 }
 
 // ---------- self-test（无副作用：合成 JSON 落临时目录） ----------
+// 夹具自带的「已知设备名」= 中性示例名，且显式传给被测函数：自检不与机器配置耦合。
+export const FIXTURE_DEVICES = Object.freeze(["alpha", "beta"]);
+
 export function selfTest() {
   const t = makeAsserter();
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "audit-struct-selftest-"));
@@ -166,11 +176,11 @@ export function selfTest() {
   try {
     const mems = [
       { id: 1, text: "普通条目", pinned: false, tags: "", created_at: 1, updated_at: 1 },
-      { id: 2, text: "【设备：ROG】正常条目", pinned: true, tags: "", created_at: 1, updated_at: 1 },
-      { id: 3, text: "【设备：某个奇怪的东西】异常设备标", pinned: false, tags: "", created_at: 1, updated_at: 1 },
+      { id: 2, text: "【设备：alpha】正常条目", pinned: true, tags: "", created_at: 1, updated_at: 1 },
+      { id: 3, text: "【设备：某个不在名单里的名字】异常设备标", pinned: false, tags: "", created_at: 1, updated_at: 1 },
       {
         id: 4,
-        text: "【设备：ROG】\n【设备：TUF】双标条目" + "x".repeat(300),
+        text: "【设备：alpha】\n【设备：beta】双标条目" + "x".repeat(300),
         pinned: false,
         tags: "",
         created_at: 1,
@@ -180,7 +190,7 @@ export function selfTest() {
     fs.writeFileSync(fix, JSON.stringify(mems), "utf8");
     const before = fs.readFileSync(fix, "utf8");
 
-    const r = structReport(readJson(fix), 12);
+    const r = structReport(readJson(fix), 12, FIXTURE_DEVICES);
     t.eq(r.total, 4, "总条数");
     t.eq(r.other.length, 1, "OTHER 命中数");
     t.eq(r.other[0].split(":")[0], "3", "OTHER 命中 id");
@@ -195,6 +205,17 @@ export function selfTest() {
     const body = src.split("// ---------- self-test")[0];
     t.ok(!/fs\.writeFileSync/.test(body), "主体逻辑段（self-test 之前）不含 fs.writeFileSync");
     t.ok(!/new DatabaseSync\(/.test(body), "主体逻辑段不开放任何数据库（纯 JSON 只读）");
+
+    // 「已知设备名」接入：判据跟着名单走，不靠改代码
+    const widened = structReport(mems, 12, ["某个不在名单里的名字"]);
+    t.eq(widened.other.length, 1, "换一套名单 ⇒ OTHER 仍是 1 条");
+    t.eq(widened.other[0].split(":")[0], "2", "换名单后轮到 #2 算 OTHER（判据真的跟着名单走，不是写死的）");
+    t.eq(widened.dbl.length, 1, "换名单不影响 DOUBLE 判据");
+    t.eq(
+      loadKnownDevices({ env: {}, config: { devices: [] } }).devices.join(","),
+      BUILTIN_DEVICES.join(","),
+      "空名单 ⇒ 退回内置中性缺省（不是「全都算 OTHER」）",
+    );
   } catch (e) {
     t.ok(false, `self-test 抛错：${e?.message ?? e}`);
   } finally {

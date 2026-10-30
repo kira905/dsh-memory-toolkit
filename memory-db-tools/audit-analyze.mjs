@@ -298,7 +298,7 @@ export function selfTest() {
   const inFile = path.join(tmp, "memories.json");
   const outDir = path.join(tmp, "out");
   try {
-    const base = "【设备：ROG】重复内容判定用长文本片段甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥";
+    const base = "【设备：alpha】重复内容判定用长文本片段甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥";
     const DRV = path.parse(process.cwd()).root;
     const mems = [
       { id: 1, text: base, pinned: true, tags: "", created_at: 1, updated_at: 1 },
