@@ -27,7 +27,7 @@ Some files in this repository **share a source with an internal production imple
 
 - **How much**: measured by the **line-level shared-source ratio** (among same-named comparable files, how
   many non-empty lines of this repository's files are found in the reference files, multiset-deducted); this
-  repository's "≥50% line-share" figure is **100%**.
+  repository's "≥50% line-share" figure is **64%**.
 - **What that means**: this repository is a **distilled export** of that implementation — **neither a verbatim
   copy nor a fully rewritten independent implementation**. Before reading any single file as an "independent
   reference implementation", run the check below.

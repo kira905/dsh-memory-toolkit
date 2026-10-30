@@ -3,6 +3,34 @@
 本仓的版本按**语义化版本**：改结论/改契约升主版本，加能力升次版本，修错别字与文档订正不升。
 英文摘要见每节末尾的 *English* 行。
 
+## v0.2.0 — 未发布（重写已完成，发版另卡）
+
+**41 个业务件独立重写**（能力与对外接口不变，实现换成自己的）：
+
+`memory-engine/lib`(21) + `memory-engine/cli`(11) + `memory-engine/tools`(3) + 仓根 `lib`(6) = **41 件**
+从"生产实现的逐字副本"改成**独立实现**。判据是**行级同源度**（同名可比件里，本仓文件的非空行有多少能在参照件中找到，多重集扣减）：
+
+- 41 件均值：**99.2% → 24.6%**；
+- **≥5KB 的 28 件全部 < 50%**（最高 47.5%，最低 12.5%）；
+- 全仓「≥50% 行同占比」：**99% → 64%**（残余面 = `dsh-memory-local/`、`memory-db-tools/`、`memory-engine/test/`，这三块不在本版范围内）。
+
+**对外接口零变化**：
+
+- `memory-engine/test` 的 184 项回归全绿，测试文件一行未改（这就是"没改坏行为"的唯一证据）；
+- 41 件导出面逐件比对：导出名零缺零多，常量值逐值不变；
+- CLI 的 `--flag` 名、缺省值、stdout/stderr 分工、退出码语义不变（改前改后逐用例对拍）。
+
+**顺带清掉内部标识**：卡号、棒号、设备别名、注释里的私有盘符路径与内部任务代号；
+7 处保留的是**契约字符串**（`EXCLUDE_DIRS` 的四类目录名、`deploy-guard` 的忽略目录表），改了会破行为。
+
+逐件台账见仓根 `k9-progress.jsonl`（41 行：before/after sha + 两次数值 + 实现形态说明）。
+
+*English*: 41 business modules rewritten as independent implementations — same capability and public
+interface, different code. Line-level shared-source ratio 99.2% → 24.6% on average; every file ≥5 KB is
+below 50%. The 184-case regression suite passes unchanged, the export surface is identical, and CLI
+flags / defaults / exit codes are unchanged. Internal identifiers were stripped; the seven remaining
+hits are contractual strings (the excluded-directory list and the guard's ignore table).
+
 ## v0.1.3 — 2026-10-30
 
 **主包补 bundle 声明 + 子路径导出面**（修「装完不生效」；无插件行为变化）：
