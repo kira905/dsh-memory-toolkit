@@ -134,6 +134,10 @@ function main() {
     timeoutMs: Number.isFinite(f.timeout) ? f.timeout : 20000,
   });
 
+  // --require-all：有段未探测就判失败。必须在渲染 / 落盘之前写回 report.exitCode，
+  // 否则人类结论行与 JSON 报告里的 rc 会和真实退出码不一致（只有 process.exitCode 是对的）。
+  if (Boolean(f['require-all']) && report.unprobed.length) report.exitCode = SENTINEL_EXIT.UNPROBED;
+
   if (apply && out) {
     writeTextFile(out, `${JSON.stringify({ ...report, dbPath, reportFile: out }, null, 2)}\n`);
   }
@@ -142,8 +146,7 @@ function main() {
     if (apply && out) process.stdout.write(`  报告已落盘：${out}\n`);
   }
 
-  const base = report.exitCode;
-  const exit = Boolean(f['require-all']) && report.unprobed.length ? SENTINEL_EXIT.UNPROBED : base;
+  const exit = report.exitCode;
   process.exitCode = exit;
   if (exit === SENTINEL_EXIT.LOCAL_UNREADABLE && !f.quiet) {
     process.stderr.write(`  本机库读不到 ⇒ rc=${SENTINEL_EXIT.LOCAL_UNREADABLE}（fail-closed，不算通过）\n`);
