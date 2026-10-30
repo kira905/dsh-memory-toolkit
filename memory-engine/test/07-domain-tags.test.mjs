@@ -42,17 +42,17 @@ test('appendDomainTags：追加不覆盖原标签', () => {
   assertEq(r.added, ['技术', 'dsh生态'], 'added 记录实际新增');
 });
 test('appendDomainTags：同输入跑两次 ⇒ 第二次零新增（写前逐标签判重）', () => {
-  const once = D.appendDomainTags('项目 工作rog', ['工作']);
+  const once = D.appendDomainTags('项目 工作记录', ['工作']);
   const twice = D.appendDomainTags(once.tags, ['工作']);
-  assertEq(once.tags, '项目 工作rog 工作', '第一次追加');
+  assertEq(once.tags, '项目 工作记录 工作', '第一次追加');
   assertEq(twice.added, [], '第二次零新增');
   assertEq(twice.tags, once.tags, '第二次不改内容');
   const tokens = D.tokensOf(twice.tags);
   assertEq(tokens.length, new Set(tokens).size, '无重复 token');
 });
-test('appendDomainTags：**token 级**判重（`工作rog` ≠ `工作`）', () => {
-  const r = D.appendDomainTags('工作rog', ['工作']);
-  assertEq(r.added, ['工作'], '`工作rog` 不算已含 `工作`');
+test('appendDomainTags：**token 级**判重（`工作记录` ≠ `工作`）', () => {
+  const r = D.appendDomainTags('工作记录', ['工作']);
+  assertEq(r.added, ['工作'], '`工作记录` 不算已含 `工作`');
   assert(r.tags.split(/\s+/).includes('工作'), '新 token 独立存在');
 });
 test('appendDomainTags：集合外的标签被丢弃（模型自创词不落库）', () => {
@@ -66,7 +66,7 @@ test('appendDomainTags：标签集为空 ⇒ 一个字都不动', () => {
   assertEq(r.added, [], '零新增');
 });
 test('domainTokensIn：只认域标签 token', () => {
-  assertEq(D.domainTokensIn('技术 dsh生态 工作rog'), ['技术', 'dsh生态'], 'token 级识别');
+  assertEq(D.domainTokensIn('技术 dsh生态 工作记录'), ['技术', 'dsh生态'], 'token 级识别');
   assertEq(D.domainTokensIn(''), [], '空 tags');
 });
 test('tagSetHash：与顺序无关、与重复无关、不同集不同哈希', () => {

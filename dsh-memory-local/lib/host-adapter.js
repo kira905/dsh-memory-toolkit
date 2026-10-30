@@ -50,7 +50,7 @@
 //   唯一源 = 本文件；派生副本 = `tools/sync-host-adapter.mjs` 幂等生成到各包 `lib/host-adapter.mjs`（含源 sha 头）；
 //   守门 = `tools/check-decoupling.mjs` R5 校验副本 sha == 唯一源。
 //
-// 【设备：工作ROG】｜P0 落地 2026-09-14 ｜ P2-提前批 2026-09-15 ｜ +`SVC.clientModules`（生态面板 boot 解析修复）2026-09-23
+// 【设备：ROG】｜P0 落地 2026-09-14 ｜ P2-提前批 2026-09-15 ｜ +`SVC.clientModules`（生态面板 boot 解析修复）2026-09-23
 // ｜ 2026-09-28 档 B 切（`UNKNOWN_FAMILY_POLICY`: 'unknown' → 'open'，主人单独批准）
 // ｜ 2026-10-10 空会话误判治本（`classifyTail` 加「整段零回合内事件 ⇒ closed」前置判定；
 //    修「新建空会话静止 10 分钟被判卡死」；真源 `docs\交付报告-卡死自愈空会话误判治本-20261010.md`）

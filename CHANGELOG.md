@@ -3,6 +3,16 @@
 本仓的版本按**语义化版本**：改结论/改契约升主版本，加能力升次版本，修错别字与文档订正不升。
 英文摘要见每节末尾的 *English* 行。
 
+## v0.1.1 — 2026-10-30
+
+**部署面补齐 + 用语刷净**（无 API / 行为契约变化）：
+
+- `dsh-memory-local/` 部署侧支持 `.modules.yaml` profiles（主包 0.2.0-rc.x 的文件布局），新增「全新安装」分支，备份目录改为按需创建。
+- 内部用语刷净：构建机的设备标记改为中性写法（`【设备：ROG】`），文档标签示例由设备名改为通用词（`工作记录`）；对应单测断言同步更新，`memory-engine` 184 项全绿。
+- 本版起 `npm publish` 走 `next` 标签、稳定后再挂 `latest`。
+
+*English: deploy side now supports `.modules.yaml` profiles (host 0.2.0-rc.x) with a fresh-install branch and lazy backup-dir creation; internal build-machine wording scrubbed (no API/behaviour change).*
+
 ## v0.1.0 — 2026-10-19（首发）
 
 **首发范围**（从自用工作流中拆出的记忆面四件，源码级只读复制 + 脱敏 + 补齐仓骨架）：

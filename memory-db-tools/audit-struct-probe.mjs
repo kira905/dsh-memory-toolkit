@@ -166,11 +166,11 @@ export function selfTest() {
   try {
     const mems = [
       { id: 1, text: "普通条目", pinned: false, tags: "", created_at: 1, updated_at: 1 },
-      { id: 2, text: "【设备：工作ROG】正常条目", pinned: true, tags: "", created_at: 1, updated_at: 1 },
+      { id: 2, text: "【设备：ROG】正常条目", pinned: true, tags: "", created_at: 1, updated_at: 1 },
       { id: 3, text: "【设备：某个奇怪的东西】异常设备标", pinned: false, tags: "", created_at: 1, updated_at: 1 },
       {
         id: 4,
-        text: "【设备：工作ROG】\n【设备：TUF】双标条目" + "x".repeat(300),
+        text: "【设备：ROG】\n【设备：TUF】双标条目" + "x".repeat(300),
         pinned: false,
         tags: "",
         created_at: 1,

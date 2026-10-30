@@ -124,7 +124,7 @@ test('distilledTagOf / srcKeyInTags：标签形态可往返解析', () => {
   assert(tags.includes('srcids=3,9'), '带源 id 清单（升序）');
   assert(/\sdate=\d{8}$/.test(tags), '带日期');
   assertEq(D.srcKeyInTags(tags), 'd0123456789abcdef', '能解析回来');
-  assertEq(D.srcKeyInTags('技术 工作rog'), null, '普通标签解析为 null');
+  assertEq(D.srcKeyInTags('技术 工作记录'), null, '普通标签解析为 null');
 });
 
 // ── 02 输入挑选：窗口 ∪ 台账 + 不自我指涉 + D2 从严 ─────────────────────────

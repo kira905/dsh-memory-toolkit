@@ -81,7 +81,7 @@ export function tokensOf(tags) {
   return String(tags ?? '').split(/\s+/).map((t) => t.trim()).filter(Boolean);
 }
 
-/** 该条 already 有哪些域标签（token 级精确比较，**不用 includes**：`工作rog` 不等于 `工作`）。 */
+/** 该条 already 有哪些域标签（token 级精确比较，**不用 includes**：`工作记录` 不等于 `工作`）。 */
 export function domainTokensIn(tags) {
   const set = new Set(tokensOf(tags));
   return DOMAIN_TOKENS.filter((t) => set.has(t));
