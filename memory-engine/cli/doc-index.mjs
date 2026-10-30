@@ -1,48 +1,57 @@
-// 记忆引擎 v2 · 离线层 —— 文档索引 CLI（方案 §3.2）
+// 文档索引 CLI（离线层）：跑一轮「文档 → 索引库」的增量同步。
 //
-// 用法：
-//   node cli/doc-index.mjs                          # 增量（默认范围 = 首期 10 篇）
-//   node cli/doc-index.mjs --all                    # 扫描面全量（⚠️ 全量是 §10 T2 触发器事项）
-//   node cli/doc-index.mjs --only docs/a.md,docs/b.md
-//   node cli/doc-index.mjs --rebuild                # 忽略差分，范围内全部重跑（按 path 覆盖，幂等）
-//   node cli/doc-index.mjs --dry-run                # 只算不写（不建库、不改 state、不写日报）
-//   node cli/doc-index.mjs --llm                    # 摘要走便宜模型（受 §3.5 成本闸）
-//   node cli/doc-index.mjs --json                   # 机器可读（日志走 stderr）
-//   路径可注入：--docs-root / --dsh-root / --doc-index-db / --state-file / --home
+// 常见用法
+//   什么都不给                     增量跑一轮，范围是首期那 10 篇
+//   --all                          扫描面全量（重活，别随手跑）
+//   --only a.md,b.md               只处理点名的几篇
+//   --rebuild                      无视差分，范围内按 path 全跑（覆盖写，重跑幂等）
+//   --dry-run                      只算不写：不建库、不动 state、不写日报
+//   --llm                          摘要改走便宜模型（同样受成本闸约束）
+//   --json                         机器可读；人话日志改走 stderr
+// 路径都能改：--docs-root / --dsh-root / --doc-index-db / --state-file / --home
 import { isMainEntry, parseArgs, makeLogger } from '../lib/cli-util.mjs';
 import { runDocIndexOnce } from '../lib/doc-index.mjs';
 
+/** 机器读 JSON，人读逐行 —— 两条路别混。 */
+function narrate(run, { json, log }) {
+  if (!json) {
+    for (const line of run.lines) log(line);
+    return;
+  }
+  const digest = {
+    ok: run.ok,
+    status: run.status,
+    exitCode: run.exitCode,
+    stats: run.stats,
+    dailyLine: run.state.lastDailyLine,
+    paths: run.state.paths,
+  };
+  process.stdout.write(`${JSON.stringify(digest, null, 2)}\n`);
+}
+
+/** 出错也要分两条路说清楚，然后按既定语义回 2。 */
+function complain(e, { json, log }) {
+  const msg = String(e?.stack ?? e);
+  if (json) process.stdout.write(`${JSON.stringify({ ok: false, error: msg }, null, 2)}\n`);
+  else log(`❌ ${msg}`);
+  return 2;
+}
+
 export async function main() {
-  const { flags } = parseArgs();
-  const json = Boolean(flags.json);
-  const log = makeLogger({ json, quiet: Boolean(flags.quiet) });
+  const parsed = parseArgs();
+  const flags = parsed.flags;
+  const asJson = Boolean(flags.json);
+  const log = makeLogger({ json: asJson, quiet: Boolean(flags.quiet) });
+  const channel = { json: asJson, log };
+
   try {
-    const r = await runDocIndexOnce({ flags });
-    if (json) {
-      process.stdout.write(
-        JSON.stringify(
-          {
-            ok: r.ok,
-            status: r.status,
-            exitCode: r.exitCode,
-            stats: r.stats,
-            dailyLine: r.state.lastDailyLine,
-            paths: r.state.paths,
-          },
-          null,
-          2,
-        ) + '\n',
-      );
-    } else {
-      for (const l of r.lines) log(l);
-    }
-    process.exitCode = r.exitCode;
+    const run = await runDocIndexOnce({ flags });
+    narrate(run, channel);
+    process.exitCode = run.exitCode;
   } catch (e) {
-    const msg = String(e && e.stack ? e.stack : e);
-    if (json) process.stdout.write(JSON.stringify({ ok: false, error: msg }, null, 2) + '\n');
-    else log(`❌ ${msg}`);
-    process.exitCode = 2;
+    process.exitCode = complain(e, channel);
   }
 }
 
-if (isMainEntry(import.meta.url)) await main();
+const invokedDirectly = isMainEntry(import.meta.url);
+if (invokedDirectly) await main();

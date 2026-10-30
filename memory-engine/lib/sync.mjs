@@ -1,180 +1,150 @@
-// 记忆引擎 v2 · 离线层 —— 增量同步（方案 §3.1 主路径）
+// 增量同步：按 updated_at 水位，把新增或改过的条目编码进独立向量库。
 //
-// 主路径：memories.updated_at > meta.lastIncrementalSyncAt 增量扫描（只读 memory.db，不写）
-// 批 50；失败保留进度、下轮续跑；换模型 / 维度变化 → 全量重建。
-// ⚠ 兜底（外置，不与本路径共用候选集）见 sweep.mjs。
+// 这条路只读源库、只写向量库；一批一批往前推，某一批炸了就停在那儿 ——
+// 之前跑完的批次进度已经落盘，下一轮从断点接着编即可。
+// 换模型 / 换维度 / 显式全量都会转成"先清掉该来源、再整份重建"。
+// 那种「改正文却不改时间戳」的盲区不归这里管，另有兜底轮转那条路。
+
 import { textHash } from './hashes.mjs';
-import {
-  META_KEYS,
-  getMetaFor,
-  setMetaFor,
-  getMeta,
-  setMeta,
-  getHashes,
-  upsertVectors,
-  countVectors,
-  deleteSource,
-} from './vectors-store.mjs';
+import * as vectors from './vectors-store.mjs';
+
+const errText = (e) => (e && e.message ? e.message : String(e));
+
+// 重建判据：模型变了、维度变了、或者调用方明确要全量。
+function decideMode({ knownModel, knownDim, modelId, dim, full }) {
+  const causes = [];
+  if (knownModel && knownModel !== modelId) causes.push(`模型变更 ${knownModel} → ${modelId}`);
+  if (knownDim && Number(knownDim) !== Number(dim)) causes.push(`维度变更 ${knownDim} → ${dim}`);
+  if (full) causes.push('显式 --full');
+  return { causes, rebuild: causes.length > 0 };
+}
+
+// 一批里真正要编码的那些：哈希与库里存的一致就跳过（幂等全靠这一步）。
+function splitBatch(rows, stored) {
+  const pending = [];
+  let skipped = 0;
+  for (const row of rows) {
+    const digest = textHash(row.text);
+    if (stored.get(String(row.id)) === digest) {
+      skipped += 1;
+      continue;
+    }
+    pending.push({ row, digest });
+  }
+  return { pending, skipped };
+}
 
 /**
  * @param {object} p
- * @param {object} p.source   memory-source / pitfall-source（只读）
- * @param {object} p.store    vectors-store { db }
- * @param {object} p.embedder 编码器（encode/encodeBatch）
+ * @param {object} p.source  记忆源 / 坑源（只读）
+ * @param {object} p.store   向量库（{ db }）
+ * @param {object} p.embedder 编码器（encodeBatch）
  * @param {string} p.modelId
  * @param {number} p.dim
- * @param {string} [p.sourceName='memory'] 向量来源名（写入 `vectors.source` 与 meta 命名空间）
+ * @param {string} [p.sourceName='memory'] 来源名（同时决定 vectors.source 与 meta 命名空间）
  */
-export async function runIncrementalSync({
-  source,
-  store,
-  embedder,
-  modelId,
-  dim,
-  sourceName = 'memory',
-  batchSize = 50,
-  full = false,
-  dryRun = false,
-  log = () => {},
-  now = () => Date.now(),
-  untilEmpty = true,
-}) {
-  const db = store.db;
-  const src = String(sourceName || 'memory');
-  const startedAt = now();
-  // ⚠️ 水位/模型/维度键一律**按来源**读写（共库不串味：方案 §A.6 首要风险 / §1.3-③.1）
-  const metaModel = getMetaFor(db, META_KEYS.modelId, src);
-  const metaDim = getMetaFor(db, META_KEYS.dim, src);
-  const metaHost = getMeta(db, META_KEYS.hostId);
+export async function runIncrementalSync({ source, store, embedder, modelId, dim, sourceName = 'memory', batchSize = 50, full = false, dryRun = false, log = () => {}, now = () => Date.now(), untilEmpty = true }) {
+  const conn = store.db;
+  const origin = String(sourceName || 'memory');
+  const openedAt = now();
+  // 水位/模型/维度一律按来源读写：两个来源共用一只库，键位串味会表现成"某来源静默漏编码"。
+  const knownModel = vectors.getMetaFor(conn, vectors.META_KEYS.modelId, origin);
+  const knownDim = vectors.getMetaFor(conn, vectors.META_KEYS.dim, origin);
+  const hostKnown = vectors.getMeta(conn, vectors.META_KEYS.hostId);
+  const { causes, rebuild } = decideMode({ knownModel, knownDim, modelId, dim, full });
 
-  const reasons = [];
-  if (metaModel && metaModel !== modelId) reasons.push(`模型变更 ${metaModel} → ${modelId}`);
-  if (metaDim && Number(metaDim) !== Number(dim)) reasons.push(`维度变更 ${metaDim} → ${dim}`);
-  if (full) reasons.push('显式 --full');
-
-  let rebuild = reasons.length > 0;
-  let watermark = 0;
-  let cleared = 0;
-
+  let level = 0;
+  let purged = 0;
   if (rebuild) {
     if (!dryRun) {
-      cleared = deleteSource(db, src);
-      setMetaFor(db, META_KEYS.modelId, src, modelId);
-      setMetaFor(db, META_KEYS.dim, src, String(dim));
-      setMetaFor(db, META_KEYS.lastIncrementalSyncAt, src, '0');
+      purged = vectors.deleteSource(conn, origin);
+      vectors.setMetaFor(conn, vectors.META_KEYS.modelId, origin, modelId);
+      vectors.setMetaFor(conn, vectors.META_KEYS.dim, origin, String(dim));
+      vectors.setMetaFor(conn, vectors.META_KEYS.lastIncrementalSyncAt, origin, '0');
     }
-    log(`[sync] 全量重建：${reasons.join(' / ')}（清空 ${cleared} 条向量）`);
+    log(`[sync] 全量重建：${causes.join(' / ')}（清空 ${purged} 条向量）`);
   } else {
-    watermark = Number(getMetaFor(db, META_KEYS.lastIncrementalSyncAt, src) || 0);
+    level = Number(vectors.getMetaFor(conn, vectors.META_KEYS.lastIncrementalSyncAt, origin) || 0);
   }
 
   const stats = {
-    source: src,
-    mode: rebuild ? 'rebuild' : 'incremental',
-    reasons,
-    watermarkStart: watermark,
-    watermarkEnd: watermark,
-    scanned: 0,
-    encoded: 0,
-    skippedSameHash: 0,
-    upserted: 0,
-    batches: 0,
-    failures: [],
-    cleared,
-    vectorsBefore: countVectors(db, src),
-    vectorsAfter: 0,
-    elapsedMs: 0,
-    startedAt,
-    finishedAt: 0,
+    source: origin, mode: rebuild ? 'rebuild' : 'incremental', reasons: causes,
+    watermarkStart: level, watermarkEnd: level,
+    scanned: 0, encoded: 0, skippedSameHash: 0, upserted: 0, batches: 0,
+    failures: [], cleared: purged,
+    vectorsBefore: vectors.countVectors(conn, origin), vectorsAfter: 0,
+    elapsedMs: 0, startedAt: openedAt, finishedAt: 0,
   };
 
   let afterId = 0;
-  let maxSeenUpdatedAt = watermark;
+  let high = level;
+
+  // 每批成功后把四类键一起前移（主机的键只在库里没有时补一次）。
+  const advanceLevel = (value) => {
+    vectors.setMetaFor(conn, vectors.META_KEYS.modelId, origin, modelId);
+    vectors.setMetaFor(conn, vectors.META_KEYS.dim, origin, String(dim));
+    if (!hostKnown) vectors.setMeta(conn, vectors.META_KEYS.hostId, String(store.hostId || ''));
+    vectors.setMetaFor(conn, vectors.META_KEYS.lastIncrementalSyncAt, origin, String(value));
+  };
 
   try {
-    for (;;) {
-      const page = source.incrementalPage(watermark, afterId, batchSize);
-      if (!page.length) break;
+    let page = source.incrementalPage(level, afterId, batchSize);
+    while (page.length) {
       stats.batches += 1;
-      afterId = page[page.length - 1].id;
+      const tailId = page[page.length - 1].id;
       stats.scanned += page.length;
-      for (const r of page) if (r.updated_at > maxSeenUpdatedAt) maxSeenUpdatedAt = r.updated_at;
+      for (const row of page) if (row.updated_at > high) high = row.updated_at;
 
-      const hashes = getHashes(db, src, page.map((r) => r.id));
-      const need = [];
-      for (const r of page) {
-        const h = textHash(r.text);
-        if (hashes.get(String(r.id)) === h) {
-          stats.skippedSameHash += 1;
-          continue;
-        }
-        need.push({ row: r, hash: h });
-      }
+      const { pending, skipped } = splitBatch(page, vectors.getHashes(conn, origin, page.map((row) => row.id)));
+      stats.skippedSameHash += skipped;
 
-      if (need.length) {
-        const vecs = await embedder.encodeBatch(need.map((n) => n.row.text));
-        if (vecs.length !== need.length) {
-          throw new Error(`编码器返回数量不符：期望 ${need.length}，实际 ${vecs.length}`);
+      if (pending.length) {
+        const encoded = await embedder.encodeBatch(pending.map((item) => item.row.text));
+        if (encoded.length !== pending.length) {
+          throw new Error(`编码器返回数量不符：期望 ${pending.length}，实际 ${encoded.length}`);
         }
         if (!dryRun) {
-          upsertVectors(
-            db,
-            need.map((n, i) => ({
-              source: src,
-              refId: n.row.id,
-              model: modelId,
-              dim: vecs[i].length,
-              vec: vecs[i],
-              textHash: n.hash,
-              updatedAt: n.row.updated_at,
-            })),
-          );
+          vectors.upsertVectors(conn, pending.map((item, at) => ({
+            source: origin,
+            refId: item.row.id,
+            model: modelId,
+            dim: encoded[at].length,
+            vec: encoded[at],
+            textHash: item.digest,
+            updatedAt: item.row.updated_at,
+          })));
         }
-        stats.encoded += need.length;
-        stats.upserted += need.length;
+        stats.encoded += pending.length;
+        stats.upserted += pending.length;
       }
 
-      // 进度前移（失败保留进度可续跑）：用「本批已扫到的最大 updated_at」，重扫边界条幂等
-      if (!dryRun) {
-        setMetaFor(db, META_KEYS.modelId, src, modelId);
-        setMetaFor(db, META_KEYS.dim, src, String(dim));
-        if (!metaHost) setMeta(db, META_KEYS.hostId, String(store.hostId || ''));
-        setMetaFor(db, META_KEYS.lastIncrementalSyncAt, src, String(maxSeenUpdatedAt));
-      }
-      log(
-        `[sync] 批 ${stats.batches}：扫 ${page.length} 条（新编码 ${need.length} / 同哈希跳过 ${
-          page.length - need.length
-        }）水位=${maxSeenUpdatedAt}`,
-      );
+      // 进度前移取「本批扫到的最大 updated_at」：边界条下轮会再扫一遍，靠同哈希幂等兜住。
+      if (!dryRun) advanceLevel(high);
+      log(`[sync] 批 ${stats.batches}：扫 ${page.length} 条（新编码 ${pending.length} / 同哈希跳过 ${page.length - pending.length}）水位=${high}`);
       if (!untilEmpty) break;
+      afterId = tailId;
+      page = source.incrementalPage(level, afterId, batchSize);
     }
-    stats.watermarkEnd = maxSeenUpdatedAt;
+    stats.watermarkEnd = high;
   } catch (e) {
-    stats.failures.push({ stage: 'sync', message: String(e && e.message ? e.message : e), atBatch: stats.batches });
-    stats.watermarkEnd = maxSeenUpdatedAt; // 已成功批次的水位已落盘
+    stats.failures.push({ stage: 'sync', message: errText(e), atBatch: stats.batches });
+    // 已成功批次的进度早就落盘了，这里只是把读数对齐
+    stats.watermarkEnd = high;
     stats.error = stats.failures[0].message;
   }
 
-  stats.vectorsAfter = countVectors(db, src);
-  stats.finishedAt = now();
-  stats.elapsedMs = stats.finishedAt - stats.startedAt;
+  stats.vectorsAfter = vectors.countVectors(conn, origin);
+  const finishedAt = now();
+  stats.finishedAt = finishedAt;
+  stats.elapsedMs = finishedAt - stats.startedAt;
   if (!dryRun) {
-    setMetaFor(
-      db,
-      META_KEYS.lastSyncStats,
-      src,
-      JSON.stringify({
-        source: src,
-        mode: stats.mode,
-        scanned: stats.scanned,
-        encoded: stats.encoded,
-        skippedSameHash: stats.skippedSameHash,
-        watermarkEnd: stats.watermarkEnd,
-        elapsedMs: stats.elapsedMs,
-        failures: stats.failures.length,
-        at: new Date(stats.finishedAt).toISOString(),
-      }),
-    );
+    const brief = {
+      source: origin, mode: stats.mode, scanned: stats.scanned,
+      encoded: stats.encoded, skippedSameHash: stats.skippedSameHash,
+      watermarkEnd: stats.watermarkEnd, elapsedMs: stats.elapsedMs,
+      failures: stats.failures.length, at: new Date(finishedAt).toISOString(),
+    };
+    vectors.setMetaFor(conn, vectors.META_KEYS.lastSyncStats, origin, JSON.stringify(brief));
   }
   return stats;
 }

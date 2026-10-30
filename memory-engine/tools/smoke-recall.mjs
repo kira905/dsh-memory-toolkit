@@ -1,8 +1,9 @@
-// 记忆引擎 v2 · 离线层 —— 真实模型召回冒烟（人读证据）
+// 记忆引擎 · 离线层 —— 真实模型召回冒烟（给人读的证据）
 //
-// 为什么单独一个脚本：命令行传中文经 cmd/ssh 会乱码，这里把查询集写死在文件里，
-// 在目标机上直接跑，得到「真实模型 + 真实语料」的可读召回证据（含短暗号）。
-import fs from 'node:fs';
+// 单独成一个脚本的理由：中文查询经 cmd/ssh 传过去会变乱码，所以把探针查询集写死在
+// 这个文件里当数据用；在目标机上跑一条命令，就能拿到「真模型 + 真语料」的可读召回
+// 证据（含短暗号）。
+import { existsSync } from 'node:fs';
 import { parseArgs, isMainEntry } from '../lib/cli-util.mjs';
 import { resolveConfig } from '../lib/config.mjs';
 import { openVectorsStore, countVectors, getMetaAll } from '../lib/vectors-store.mjs';
@@ -10,7 +11,8 @@ import { openMemorySource } from '../lib/memory-source.mjs';
 import { createLocalEmbedder } from '../lib/embedder.mjs';
 import { recall, buildVectorIndex, shouldTrigger } from '../lib/recall.mjs';
 
-const QUERIES = [
+/** 固定探针集：日常暗号、工程问题，外加一个裸端口号。 */
+const PROBES = [
   '退下吧',
   '整夜干活',
   '去深水区',
@@ -23,16 +25,84 @@ const QUERIES = [
   '3080 端口',
 ];
 
+/** CLI 里能改配置路径的几个开关。 */
+const PATH_FLAGS = [
+  ['memoryDb', 'memory-db'],
+  ['vectorsDb', 'vectors-db'],
+  ['modelDir', 'model-dir'],
+];
+
+const LABEL_COLUMNS = 9;
+const HIT_INDENT = '   ';
+const MAX_BRIEF_CHARS = 58;
+const TOP_K = 5;
+
+/** 字符串的终端宽度：CJK 码点按两列算（首列才能对齐）。 */
+const widthOf = (text) => [...text].reduce((cols, ch) => cols + (ch.codePointAt(0) > 0x2e7f ? 2 : 1), 0);
+
+const padLabel = (text) => text + ' '.repeat(Math.max(0, LABEL_COLUMNS - widthOf(text)));
+
+const collapse = (text) => String(text).replace(/\s+/g, ' ');
+
+/** 一条记忆的单行、截断版摘要。 */
+const excerpt = (text) => collapse(text).slice(0, MAX_BRIEF_CHARS);
+
+const gateVerdict = (gate) => (gate.trigger ? '是' : `否(${gate.reason})`);
+
+/** 把命令行开关翻成 resolveConfig 的覆盖项；没给的键一律不出现。 */
+function overridesFrom(flags) {
+  const overrides = {};
+  for (const [key, flag] of PATH_FLAGS) {
+    if (flags[flag]) overrides[key] = flags[flag];
+  }
+  if (flags.model) overrides.modelId = flags.model;
+  if (flags.dim) overrides.dim = Number(flags.dim);
+  return overrides;
+}
+
+/** 表头段：查之前先把语料形状交代清楚。 */
+function printCorpora({ config, source, store, embedder }) {
+  const rows = [
+    ['主机', process.env.COMPUTERNAME || '?'],
+    ['记忆库', `${config.memoryDb}（${source.count()} 条 / pinned ${source.pinnedIds().length} 条）`],
+    ['向量库', `${config.vectorsDb}（${countVectors(store.db, 'memory')} 条向量）`],
+    ['meta', JSON.stringify(getMetaAll(store.db))],
+    ['模型', `${config.modelId} dim=${embedder.dim}`],
+  ];
+  console.log('=== 真实模型召回冒烟 ===');
+  for (const [label, value] of rows) console.log(`${padLabel(label)}: ${value}`);
+  console.log('');
+}
+
+function printHit(hit, row) {
+  const stored = row ? row.pinned : '?';
+  const text = excerpt(row ? row.text : '(已删除)');
+  console.log(`${HIT_INDENT}#${hit.refId} score=${hit.score.toFixed(5)} [${hit.sources.join('+')}] pinned=${stored} · ${text}…`);
+}
+
+/** 跑一条探针；返回这条命中里漏进了几条 pinned。 */
+async function runProbe({ query, store, source, embedder, index, pinnedIds }) {
+  const gate = shouldTrigger(query);
+  const startedAt = performance.now();
+  const outcome = await recall({ query, store, source, embedder, index, resultTopK: TOP_K });
+  const elapsed = performance.now() - startedAt;
+
+  const ftsMatched = outcome.stats.ftsMatched ?? 0;
+  console.log(`【${query}】触发=${gateVerdict(gate)} 命中 ${outcome.hits.length} 条 · ${elapsed.toFixed(1)}ms · FTS命中=${ftsMatched}`);
+
+  let leaked = 0;
+  for (const hit of outcome.hits) {
+    if (pinnedIds.has(String(hit.refId))) leaked += 1;
+    printHit(hit, source.getById(hit.id));
+  }
+  console.log('');
+  return leaked;
+}
+
 async function main() {
   const { flags } = parseArgs();
-  const config = resolveConfig({
-    memoryDb: flags['memory-db'] || undefined,
-    vectorsDb: flags['vectors-db'] || undefined,
-    modelDir: flags['model-dir'] || undefined,
-    modelId: flags.model || undefined,
-    dim: flags.dim ? Number(flags.dim) : undefined,
-  });
-  if (!fs.existsSync(config.memoryDb)) throw new Error(`记忆库不存在：${config.memoryDb}`);
+  const config = resolveConfig(overridesFrom(flags));
+  if (!existsSync(config.memoryDb)) throw new Error(`记忆库不存在：${config.memoryDb}`);
 
   const embedder = await createLocalEmbedder({
     modelDir: config.modelDir,
@@ -43,34 +113,20 @@ async function main() {
   const source = openMemorySource(config.memoryDb);
   const index = buildVectorIndex(store.db, { source: 'memory' });
 
-  console.log('=== 真实模型召回冒烟 ===');
-  console.log(`主机     : ${process.env.COMPUTERNAME || '?'}`);
-  console.log(`记忆库   : ${config.memoryDb}（${source.count()} 条 / pinned ${source.pinnedIds().length} 条）`);
-  console.log(`向量库   : ${config.vectorsDb}（${countVectors(store.db, 'memory')} 条向量）`);
-  console.log(`meta     : ${JSON.stringify(getMetaAll(store.db))}`);
-  console.log(`模型     : ${config.modelId} dim=${embedder.dim}`);
-  console.log('');
+  printCorpora({ config, source, store, embedder });
 
-  const pinned = new Set(source.pinnedIds().map(String));
-  let pinnedLeak = 0;
-  for (const q of QUERIES) {
-    const gate = shouldTrigger(q);
-    const t0 = performance.now();
-    const r = await recall({ query: q, store, source, embedder, index, resultTopK: 5 });
-    const ms = performance.now() - t0;
-    console.log(`【${q}】触发=${gate.trigger ? '是' : `否(${gate.reason})`} 命中 ${r.hits.length} 条 · ${ms.toFixed(1)}ms · FTS命中=${r.stats.ftsMatched ?? 0}`);
-    for (const h of r.hits) {
-      if (pinned.has(String(h.refId))) pinnedLeak += 1;
-      const row = source.getById(h.id);
-      const brief = (row ? row.text : '(已删除)').replace(/\s+/g, ' ').slice(0, 58);
-      console.log(`   #${h.refId} score=${h.score.toFixed(5)} [${h.sources.join('+')}] pinned=${row ? row.pinned : '?'} · ${brief}…`);
+  const pinnedIds = new Set(source.pinnedIds().map(String));
+  let leakedTotal = 0;
+  try {
+    for (const query of PROBES) {
+      leakedTotal += await runProbe({ query, store, source, embedder, index, pinnedIds });
     }
-    console.log('');
+    console.log(`pinned 泄漏检查：${leakedTotal === 0 ? '✅ 0 条（排除生效）' : `❌ ${leakedTotal} 条`}`);
+  } finally {
+    source.close();
+    store.db.close();
   }
-  console.log(`pinned 泄漏检查：${pinnedLeak === 0 ? '✅ 0 条（排除生效）' : `❌ ${pinnedLeak} 条`}`);
-  source.close();
-  store.db.close();
-  process.exitCode = pinnedLeak === 0 ? 0 : 4;
+  process.exitCode = leakedTotal === 0 ? 0 : 4;
 }
 
 if (isMainEntry(import.meta.url)) await main();

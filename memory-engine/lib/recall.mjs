@@ -1,291 +1,320 @@
-// 记忆引擎 v2 · 离线层 —— 召回（方案 §3.3）
+// 离线层召回（方案 §3.3）
 //
-// 向量为主（余弦 top-20）+ FTS5 仅补标签/英文/数字 + RRF(k=60) 融合 + 排除 pinned
-// 触发：非空即触发（不用 ≥10 字阈值——短暗号「退下吧」「整夜干活」恰恰最需要记忆）；
-//       纯符号 / 单字跳过。
+// 主线：向量余弦 top-20 打底 + FTS5 只补英文/数字 + RRF(k=60) 融合 + 已 pinned 的剔除。
+// 触发判定不设「至少 10 字」这种阈值 —— 「退下吧」「整夜干活」这类短暗号恰恰最需要召回，
+// 只把空串、纯符号、单字挡在外面。
 import { loadMatrix } from './vectors-store.mjs';
 
-/** 触发判定（方案 §3.3 Z16 已吸收） */
+const TRIGGER_RULES = [
+  { reason: 'empty', match: (raw) => raw.length === 0 },
+  { reason: 'symbols-only', match: (raw) => countSemantic(raw) === 0 },
+  { reason: 'single-char', match: (raw) => countSemantic(raw) < 2 },
+];
+
+// 数一数字母与数字的个数（中文汉字按字母算，标点不算）
+function countSemantic(text) {
+  const hits = text.match(/[\p{L}\p{N}]/gu);
+  return hits ? hits.length : 0;
+}
+
+// 触发判定：按上面的规则表逐条试，都不命中就算可召回
 export function shouldTrigger(rawQuery) {
-  const q = String(rawQuery ?? '').trim();
-  if (!q) return { trigger: false, reason: 'empty' };
-  const semantic = q.match(/[\p{L}\p{N}]/gu) || [];
-  if (semantic.length === 0) return { trigger: false, reason: 'symbols-only' };
-  if (semantic.length < 2) return { trigger: false, reason: 'single-char' };
-  return { trigger: true, reason: 'non-empty' };
+  const raw = String(rawQuery ?? '').trim();
+  const blocked = TRIGGER_RULES.find((rule) => rule.match(raw));
+  return blocked ? { trigger: false, reason: blocked.reason } : { trigger: true, reason: 'non-empty' };
 }
 
-/** 抽 FTS 补位 token：只取英文/数字（A4：中文连续串在 unicode61 下几近不可用） */
+// 抽 FTS 补位 token：只认英文/数字（中文连续串在 unicode61 下几近不可用）。
+// 单字符噪声太大直接丢；同一条只留一次，凑满 max 就收手。
 export function extractFtsTokens(rawQuery, max = 8) {
-  const m = String(rawQuery ?? '').match(/[A-Za-z0-9][A-Za-z0-9_.-]*/g) || [];
-  const out = [];
-  for (const t of m) {
-    if (t.length < 2) continue; // 单字母/单数字噪声大
-    if (!out.includes(t)) out.push(t);
-    if (out.length >= max) break;
+  const text = String(rawQuery ?? '');
+  const pattern = /[A-Za-z0-9][A-Za-z0-9_.-]*/g;
+  const listed = [];
+  const seen = new Set();
+  let scan = pattern.exec(text);
+  while (scan) {
+    const token = scan[0];
+    if (token.length >= 2 && !seen.has(token)) {
+      seen.add(token);
+      listed.push(token);
+      if (listed.length >= max) break;
+    }
+    scan = pattern.exec(text);
   }
-  return out;
+  return listed;
 }
 
-/** 构造 FTS5 MATCH 表达式：每个 token 加双引号（防语法注入），OR 连接 */
+// 拼 FTS5 的 MATCH 表达式：每个 token 裹双引号防语法注入，token 之间 OR
 export function buildFtsMatch(tokens) {
-  if (!tokens || !tokens.length) return null;
-  return tokens.map((t) => `"${String(t).replace(/"/g, '')}"`).join(' OR ');
+  if (!Array.isArray(tokens) || tokens.length === 0) return null;
+  const quoted = [];
+  for (const token of tokens) quoted.push(`"${String(token).replace(/"/g, '')}"`);
+  return quoted.join(' OR ');
 }
 
-/** 载入向量矩阵 + 行范数（余弦召回用；一次构建，多次召回） */
+// 每行范数（余弦召回用；建一次索引反复召回）
+function rowNorms(data, count, dim) {
+  const norms = new Float32Array(count);
+  for (let row = 0; row < count; row += 1) {
+    const from = row * dim;
+    const slice = data.subarray(from, from + dim);
+    let squareSum = 0;
+    for (let i = 0; i < dim; i += 1) squareSum += slice[i] * slice[i];
+    norms[row] = Math.sqrt(squareSum) || 1;
+  }
+  return norms;
+}
+
+// 载入向量矩阵 + 每行范数
 export function buildVectorIndex(db, { source = 'memory', model = null } = {}) {
   const matrix = loadMatrix(db, source, model);
-  const norms = new Float32Array(matrix.count);
-  for (let r = 0; r < matrix.count; r += 1) {
-    let n = 0;
-    const off = r * matrix.dim;
-    for (let i = 0; i < matrix.dim; i += 1) n += matrix.data[off + i] * matrix.data[off + i];
-    norms[r] = Math.sqrt(n) || 1;
-  }
-  return { ...matrix, norms, builtAt: Date.now() };
+  return { ...matrix, norms: rowNorms(matrix.data, matrix.count, matrix.dim), builtAt: Date.now() };
 }
 
-/** 余弦 top-K（纯内存暴力；万级候选毫秒级，方案 §3.3） */
+// 余弦 top-K（纯内存暴力扫；候选上万也是毫秒级）
 export function cosineTopK(index, qvec, topK) {
   const { data, dim, count, norms } = index;
   if (!dim || !count) return [];
-  let qn = 0;
-  for (let i = 0; i < dim; i += 1) qn += qvec[i] * qvec[i];
-  qn = Math.sqrt(qn) || 1;
+
+  let qNorm = 0;
+  for (let i = 0; i < dim; i += 1) qNorm += qvec[i] * qvec[i];
+  qNorm = Math.sqrt(qNorm) || 1;
+
   const scores = new Float32Array(count);
-  for (let r = 0; r < count; r += 1) {
-    let s = 0;
-    const off = r * dim;
-    for (let i = 0; i < dim; i += 1) s += data[off + i] * qvec[i];
-    scores[r] = s / (qn * norms[r]);
+  for (let row = 0; row < count; row += 1) {
+    const from = row * dim;
+    let dot = 0;
+    for (let i = 0; i < dim; i += 1) dot += data[from + i] * qvec[i];
+    scores[row] = dot / (qNorm * norms[row]);
   }
-  const order = Array.from({ length: count }, (_, i) => i);
-  order.sort((a, b) => scores[b] - scores[a] || a - b);
-  const k = Math.min(Number(topK) || 0, count);
-  const out = [];
-  for (let i = 0; i < k; i += 1) {
-    const idx = order[i];
-    out.push({ index: idx, refId: index.refIds[idx], id: index.refIdsNum[idx], score: scores[idx] });
+
+  const order = new Array(count);
+  for (let i = 0; i < count; i += 1) order[i] = i;
+  order.sort((left, right) => scores[right] - scores[left] || left - right);
+
+  const take = Math.min(Number(topK) || 0, count);
+  const picked = [];
+  for (let i = 0; i < take; i += 1) {
+    const at = order[i];
+    picked.push({ index: at, refId: index.refIds[at], id: index.refIdsNum[at], score: scores[at] });
   }
-  return out;
+  return picked;
 }
 
-/**
- * refId → 数字 id。
- * ⚠️ 语义定稿（方案 C1 + 2026-10-10 落地）：**数字 `id` 只是 memory 源的兼容字段**
- *   （`memories.id` 是整数主键）；其它来源（坑库 16 位 hex、未来 policy）的 `ref_id` 是**不透明键**
- *   ⇒ 一律给 `null`，绝不写 `NaN`（也避免 hex 全数字时与记忆 id 撞号）。
- */
+// 规范十进制：允许 0，不允许前导零 / 正负号 / 小数点
+function isCanonicalDecimal(text) {
+  return /^(0|[1-9]\d*)$/.test(text);
+}
+
+// refId → 数字 id。
+// 只有 memory 源的 id 是整数主键；坑库的 16 位 hex 之类是不透明键 ⇒ 恒给 null，
+// 绝不写 NaN（也顺带躲开「hex 恰好全是数字」跟记忆 id 撞号）。
 export function refIdToNum(refId) {
-  const s = String(refId);
-  // 前导零视为不透明键（记忆 id 是自增整数，不会带前导零）
-  if (!/^(0|[1-9]\d*)$/.test(s)) return null;
-  const n = Number(s);
-  return Number.isSafeInteger(n) ? n : null;
+  const text = String(refId);
+  if (!isCanonicalDecimal(text)) return null;
+  const value = Number(text);
+  return Number.isSafeInteger(value) ? value : null;
 }
 
-/**
- * refId 平局裁决比较器（方案 C1）：
- * 两侧都是纯数字串 ⇒ **按数值**比（与旧行为逐字节一致，memory 源不受影响）；
- * 任一不是数字（如坑库 hex）⇒ 按**字符串字典序**比（稳定、可复现，不再出现 `NaN - NaN` 的乱序）。
- */
+// refId 平局裁决：两边都是整数串就按数值比；只要一边不是，就按字符串字典序比
+// （稳定可复现，不会出现 NaN 相减导致的乱序）。
 export function cmpRefId(a, b) {
-  const sa = String(a);
-  const sb = String(b);
-  const na = /^-?\d+$/.test(sa);
-  const nb = /^-?\d+$/.test(sb);
-  if (na && nb) return Number(sa) - Number(sb);
-  return sa < sb ? -1 : sa > sb ? 1 : 0;
+  const left = String(a);
+  const right = String(b);
+  if (/^-?\d+$/.test(left) && /^-?\d+$/.test(right)) return Number(left) - Number(right);
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
 }
 
-/**
- * RRF 融合（k=60）：score(d) = Σ_r 1/(k + rank_r(d))
- * @param {Array<{source:string, ids:string[]}>} rankLists 各路排名（已按优劣降序，rank 从 1 起）
- */
+// RRF 融合：score(d) = Σ_r 1/(k + rank_r(d))；rankLists 每路已按优劣降序，rank 从 1 起
 export function rrfFuse(rankLists, k = 60) {
-  const acc = new Map();
+  const board = new Map();
   for (const list of rankLists) {
     if (!list || !list.ids) continue;
-    list.ids.forEach((id, i) => {
-      const rank = i + 1;
-      const cur = acc.get(String(id)) || { id: String(id), score: 0, sources: [], ranks: {} };
-      cur.score += 1 / (k + rank);
-      if (!cur.sources.includes(list.source)) cur.sources.push(list.source);
-      cur.ranks[list.source] = rank;
-      acc.set(String(id), cur);
-    });
-  }
-  return [...acc.values()].sort((a, b) => b.score - a.score || cmpRefId(a.id, b.id));
-}
-
-/**
- * 召回主入口。
- * fail-open：任何异常都由调用方兜住（本函数内部对 FTS 异常降级为空路）。
- * @returns {Promise<object>}
- */
-export async function recall({
-  query,
-  store,
-  source,
-  embedder,
-  index = null,
-  sourceName = 'memory',
-  vectorTopK = 20,
-  ftsTopK = 20,
-  rrfK = 60,
-  resultTopK = 8,
-  log = () => {},
-}) {
-  const t0 = performance.now();
-  const gate = shouldTrigger(query);
-  if (!gate.trigger) {
-    return { triggered: false, reason: gate.reason, query: String(query ?? ''), hits: [], timings: { totalMs: 0 } };
-  }
-
-  const db = store.db;
-  const pinned = new Set((source ? source.pinnedIds() : []).map(String));
-
-  // ① 查询编码
-  const tEnc = performance.now();
-  const qvec = await embedder.encode(query);
-  const encodeMs = performance.now() - tEnc;
-
-  // ② 向量路
-  const tVec = performance.now();
-  const idx = index || buildVectorIndex(db, { source: sourceName });
-  const rawVec = cosineTopK(idx, qvec, vectorTopK + pinned.size + 5);
-  const vecHits = rawVec.filter((h) => !pinned.has(String(h.refId))).slice(0, vectorTopK);
-  const vectorMs = performance.now() - tVec;
-
-  // ③ FTS 补位路（仅英文/数字；缺失时不参与，不做零分占位）
-  const tFts = performance.now();
-  let ftsHits = [];
-  let ftsMatched = 0;
-  const tokens = extractFtsTokens(query);
-  const matchExpr = buildFtsMatch(tokens);
-  if (matchExpr && source) {
-    const r = source.ftsSearch(matchExpr, ftsTopK + pinned.size + 5);
-    if (Array.isArray(r)) {
-      ftsMatched = r.length;
-      ftsHits = r.filter((h) => !pinned.has(String(h.id))).slice(0, ftsTopK);
-    } else if (r && r.error) {
-      log(`[recall] FTS 补位降级：${r.error}`);
+    for (let pos = 0; pos < list.ids.length; pos += 1) {
+      const key = String(list.ids[pos]);
+      const rank = pos + 1;
+      let entry = board.get(key);
+      if (!entry) {
+        entry = { id: key, score: 0, sources: [], ranks: {} };
+        board.set(key, entry);
+      }
+      entry.score += 1 / (k + rank);
+      if (!entry.sources.includes(list.source)) entry.sources.push(list.source);
+      entry.ranks[list.source] = rank;
     }
   }
-  const ftsMs = performance.now() - tFts;
+  return [...board.values()].sort((left, right) => right.score - left.score || cmpRefId(left.id, right.id));
+}
 
-  // ④ RRF 融合
-  const tFuse = performance.now();
-  const fused = rrfFuse(
+// 剔掉 pinned 再按上限截断（向量路看 refId，FTS 路看 id）
+function excludePinned(rows, pinned, take, idField) {
+  const kept = [];
+  for (const row of rows) {
+    if (!pinned.has(String(row[idField]))) kept.push(row);
+  }
+  return kept.slice(0, take);
+}
+
+// FTS 补位路：没有 MATCH 表达式或没有来源就整路缺席（不拿零分占位）
+function ftsPass({ source, matchExpr, pinned, take, log, degradePrefix }) {
+  if (!matchExpr || !source) return { hits: [], matched: 0 };
+  const raw = source.ftsSearch(matchExpr, take + pinned.size + 5);
+  if (Array.isArray(raw)) return { hits: excludePinned(raw, pinned, take, 'id'), matched: raw.length };
+  if (raw && raw.error) log(`${degradePrefix}${raw.error}`);
+  return { hits: [], matched: 0 };
+}
+
+// 单源召回结果 → 对外命中形状
+function hitOf(entry, sourceName) {
+  return {
+    refId: entry.id,
+    id: sourceName === 'memory' ? refIdToNum(entry.id) : null,
+    source: sourceName,
+    score: entry.score,
+    sources: entry.sources,
+    vectorRank: entry.ranks.vector ?? null,
+    ftsRank: entry.ranks.fts ?? null,
+  };
+}
+
+// 召回主入口。内部对 FTS 异常降级成空路，整体由调用方兜错（fail-open）。
+export async function recall({
+  query, store, source, embedder,
+  index = null, sourceName = 'memory',
+  vectorTopK = 20, ftsTopK = 20, rrfK = 60, resultTopK = 8,
+  log = () => {},
+}) {
+  const startedAt = performance.now();
+  const admit = shouldTrigger(query);
+  if (!admit.trigger) {
+    return { triggered: false, reason: admit.reason, query: String(query ?? ''), hits: [], timings: { totalMs: 0 } };
+  }
+
+  const vectorsDb = store.db;
+  const pinned = new Set((source ? source.pinnedIds() : []).map(String));
+
+  const encodeStart = performance.now();
+  const queryVector = await embedder.encode(query);
+  const encodeMs = performance.now() - encodeStart;
+
+  const vectorStart = performance.now();
+  const builtIndex = index || buildVectorIndex(vectorsDb, { source: sourceName });
+  const vectorCandidates = cosineTopK(builtIndex, queryVector, vectorTopK + pinned.size + 5);
+  const vecHits = excludePinned(vectorCandidates, pinned, vectorTopK, 'refId');
+  const vectorMs = performance.now() - vectorStart;
+
+  const ftsStart = performance.now();
+  const ftsTokens = extractFtsTokens(query);
+  const ftsQuery = buildFtsMatch(ftsTokens);
+  const fts = ftsPass({ source, matchExpr: ftsQuery, pinned, take: ftsTopK, log, degradePrefix: '[recall] FTS 补位降级：' });
+  const ftsMs = performance.now() - ftsStart;
+
+  const fuseStart = performance.now();
+  const merged = rrfFuse(
     [
-      { source: 'vector', ids: vecHits.map((h) => String(h.refId)) },
-      { source: 'fts', ids: ftsHits.map((h) => String(h.id)) },
+      { source: 'vector', ids: vecHits.map((hit) => String(hit.refId)) },
+      { source: 'fts', ids: fts.hits.map((hit) => String(hit.id)) },
     ],
     rrfK,
   );
-  const hits = fused.slice(0, Number(resultTopK) || 8).map((h) => ({
-    refId: h.id,
-    // 数字 id 只对 memory 源有意义（见 refIdToNum 注释）；其它来源恒为 null
-    id: sourceName === 'memory' ? refIdToNum(h.id) : null,
-    source: sourceName,
-    score: h.score,
-    sources: h.sources,
-    vectorRank: h.ranks.vector ?? null,
-    ftsRank: h.ranks.fts ?? null,
-  }));
-  const fuseMs = performance.now() - tFuse;
+  const hits = merged.slice(0, Number(resultTopK) || 8).map((entry) => hitOf(entry, sourceName));
+  const fuseMs = performance.now() - fuseStart;
 
-  const totalMs = performance.now() - t0;
   return {
     triggered: true,
-    reason: gate.reason,
+    reason: admit.reason,
     query: String(query ?? ''),
     hits,
-    timings: { encodeMs, vectorMs, ftsMs, fuseMs, totalMs },
+    timings: { encodeMs, vectorMs, ftsMs, fuseMs, totalMs: performance.now() - startedAt },
     stats: {
       sourceName,
-      indexSize: idx.count,
+      indexSize: builtIndex.count,
       pinnedExcluded: pinned.size,
-      vectorCandidates: rawVec.length,
+      vectorCandidates: vectorCandidates.length,
       vectorHits: vecHits.length,
-      ftsTokens: tokens,
-      ftsMatchExpr: matchExpr,
-      ftsMatched,
-      ftsHits: ftsHits.length,
-      fused: fused.length,
+      ftsTokens,
+      ftsMatchExpr: ftsQuery,
+      ftsMatched: fts.matched,
+      ftsHits: fts.hits.length,
+      fused: merged.length,
     },
   };
 }
 
-/**
- * **多来源召回**（方案 §3 A.2 第 5 行新增入口）：query 只编码一次，逐来源各做「向量 top-K + FTS 补位」，
- * 跨来源用 RRF 融合；每个命中带 `source` 归属，融合键 = `<source名>:<refId>`（**否则两源同 id 会互相吃掉**）。
- *
- * 逐来源 fail-open：某来源无库/无向量/报错 ⇒ 记一行、跳过该来源，**不影响其他来源**。
- * @param {object} p
- * @param {Array<{name:string, source?:object, index?:object}>} p.entries 来源列表（name 即 `vectors.source`）
- */
+// 融合键：`<来源名>:<refId>`（不加来源前缀的话，两源同 id 会互相吃掉）
+function fuseKey(name, refId) {
+  return `${name}:${String(refId)}`;
+}
+
+// 多来源召回结果 → 对外命中形状
+function multiHitOf(entry, info) {
+  const label = info.name;
+  return {
+    key: entry.id,
+    source: label,
+    refId: info.refId,
+    id: label === 'memory' ? refIdToNum(info.refId) : null,
+    score: entry.score,
+    sources: entry.sources,
+    vectorRank: label ? entry.ranks[`vector:${label}`] ?? null : null,
+    ftsRank: label ? entry.ranks[`fts:${label}`] ?? null : null,
+  };
+}
+
+// 多来源召回：query 只编码一次，逐来源做「向量 top-K + FTS 补位」，跨来源再 RRF 融合。
+// 每个命中带 source 归属；某来源没库/没向量/报错 ⇒ 记一行跳过，不影响别的来源。
 export async function recallMulti({
-  query,
-  store,
-  entries,
-  embedder,
-  perSourceTopK = 5,
-  rrfK = 60,
-  resultTopK = 8,
+  query, store, entries, embedder,
+  perSourceTopK = 5, rrfK = 60, resultTopK = 8,
   log = () => {},
 }) {
-  const t0 = performance.now();
-  const gate = shouldTrigger(query);
-  if (!gate.trigger) {
+  const startedAt = performance.now();
+  const admit = shouldTrigger(query);
+  if (!admit.trigger) {
     return {
-      triggered: false,
-      reason: gate.reason,
-      query: String(query ?? ''),
-      hits: [],
-      perSource: {},
-      timings: { totalMs: 0 },
+      triggered: false, reason: admit.reason, query: String(query ?? ''), hits: [],
+      perSource: {}, timings: { totalMs: 0 },
     };
   }
 
-  const db = store.db;
-  const tEnc = performance.now();
-  const qvec = await embedder.encode(query);
-  const encodeMs = performance.now() - tEnc;
+  const vectorsDb = store.db;
+  const encodeStart = performance.now();
+  const queryVector = await embedder.encode(query);
+  const encodeMs = performance.now() - encodeStart;
 
-  const tokens = extractFtsTokens(query);
-  const matchExpr = buildFtsMatch(tokens);
+  const ftsTokens = extractFtsTokens(query);
+  const ftsQuery = buildFtsMatch(ftsTokens);
   const rankLists = [];
-  const meta = new Map();
+  const origin = new Map();
   const perSource = {};
-  const keyOf = (name, refId) => `${name}:${String(refId)}`;
 
-  const tVec = performance.now();
-  for (const e of entries || []) {
-    const name = String(e.name);
-    const src = e.source || null;
+  const vectorStart = performance.now();
+  for (const entry of entries || []) {
+    const name = String(entry.name);
+    const src = entry.source || null;
     const rec = { indexSize: 0, pinnedExcluded: 0, vectorHits: 0, ftsHits: 0, error: null };
     try {
-      const idx = e.index || buildVectorIndex(db, { source: name });
-      rec.indexSize = idx.count;
+      const builtIndex = entry.index || buildVectorIndex(vectorsDb, { source: name });
+      rec.indexSize = builtIndex.count;
       const pinned = new Set((src ? src.pinnedIds() : []).map(String));
       rec.pinnedExcluded = pinned.size;
-      const rawVec = cosineTopK(idx, qvec, perSourceTopK + pinned.size + 5);
-      const vecHits = rawVec.filter((h) => !pinned.has(String(h.refId))).slice(0, perSourceTopK);
-      rec.vectorHits = vecHits.length;
-      rankLists.push({ source: `vector:${name}`, ids: vecHits.map((h) => keyOf(name, h.refId)) });
-      for (const h of vecHits) meta.set(keyOf(name, h.refId), { name, refId: String(h.refId) });
 
-      if (matchExpr && src) {
-        const r = src.ftsSearch(matchExpr, perSourceTopK + pinned.size + 5);
-        if (Array.isArray(r)) {
-          const ftsHits = r.filter((h) => !pinned.has(String(h.id))).slice(0, perSourceTopK);
+      const candidates = cosineTopK(builtIndex, queryVector, perSourceTopK + pinned.size + 5);
+      const vecHits = excludePinned(candidates, pinned, perSourceTopK, 'refId');
+      rec.vectorHits = vecHits.length;
+      rankLists.push({ source: `vector:${name}`, ids: vecHits.map((hit) => fuseKey(name, hit.refId)) });
+      for (const hit of vecHits) origin.set(fuseKey(name, hit.refId), { name, refId: String(hit.refId) });
+
+      if (ftsQuery && src) {
+        const raw = src.ftsSearch(ftsQuery, perSourceTopK + pinned.size + 5);
+        if (Array.isArray(raw)) {
+          const ftsHits = excludePinned(raw, pinned, perSourceTopK, 'id');
           rec.ftsHits = ftsHits.length;
-          rankLists.push({ source: `fts:${name}`, ids: ftsHits.map((h) => keyOf(name, h.id)) });
-          for (const h of ftsHits) meta.set(keyOf(name, h.id), { name, refId: String(h.id) });
-        } else if (r && r.error) {
-          log(`[recallMulti] ${name} FTS 补位降级：${r.error}`);
+          rankLists.push({ source: `fts:${name}`, ids: ftsHits.map((hit) => fuseKey(name, hit.id)) });
+          for (const hit of ftsHits) origin.set(fuseKey(name, hit.id), { name, refId: String(hit.id) });
+        } else if (raw && raw.error) {
+          log(`[recallMulti] ${name} FTS 补位降级：${raw.error}`);
         }
       }
     } catch (err) {
@@ -294,38 +323,29 @@ export async function recallMulti({
     }
     perSource[name] = rec;
   }
-  const vectorMs = performance.now() - tVec;
+  const vectorMs = performance.now() - vectorStart;
 
-  const tFuse = performance.now();
-  const fused = rrfFuse(rankLists, rrfK);
-  const hits = fused.slice(0, Number(resultTopK) || 8).map((h) => {
-    const m = meta.get(h.id) || { name: null, refId: h.id };
-    return {
-      key: h.id,
-      source: m.name,
-      refId: m.refId,
-      id: m.name === 'memory' ? refIdToNum(m.refId) : null,
-      score: h.score,
-      sources: h.sources,
-      vectorRank: m.name ? h.ranks[`vector:${m.name}`] ?? null : null,
-      ftsRank: m.name ? h.ranks[`fts:${m.name}`] ?? null : null,
-    };
+  const fuseStart = performance.now();
+  const merged = rrfFuse(rankLists, rrfK);
+  const hits = merged.slice(0, Number(resultTopK) || 8).map((entry) => {
+    const info = origin.get(entry.id) || { name: null, refId: entry.id };
+    return multiHitOf(entry, info);
   });
-  const fuseMs = performance.now() - tFuse;
+  const fuseMs = performance.now() - fuseStart;
 
   return {
     triggered: true,
-    reason: gate.reason,
+    reason: admit.reason,
     query: String(query ?? ''),
     hits,
     perSource,
-    timings: { encodeMs, vectorMs, fuseMs, totalMs: performance.now() - t0 },
+    timings: { encodeMs, vectorMs, fuseMs, totalMs: performance.now() - startedAt },
     stats: {
-      sources: (entries || []).map((e) => String(e.name)),
-      ftsTokens: tokens,
-      ftsMatchExpr: matchExpr,
+      sources: (entries || []).map((entry) => String(entry.name)),
+      ftsTokens,
+      ftsMatchExpr: ftsQuery,
       rankLists: rankLists.length,
-      fused: fused.length,
+      fused: merged.length,
     },
   };
 }

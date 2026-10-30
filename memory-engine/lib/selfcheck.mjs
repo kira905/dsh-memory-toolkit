@@ -1,9 +1,136 @@
-// 记忆引擎 v2 · 离线层 —— 启动自检（方案 §8.3 交付物 #9）
+// 启动自检：把「引擎现在到底能不能用」拆成几条独立判据，逐条给结论。
 //
-// 四判据：模型可用性 / 维度一致 / 表存在性（缺则重建）/ hostId 校验。
-// 自检失败绝不阻断启动：返回结构化结果，由调用方决定是否降级。
+// 设计取舍：自检**永不阻断启动**。任何一条判死，也只是往清单里写一条 fail，
+// 由调用方自己决定是降级跑还是重建 —— 因为自检本身挂掉比带病启动更糟。
 import { SCHEMA_VERSION } from './config.mjs';
 import { META_KEYS, getMeta, getMetaFor, setMeta, countVectors } from './vectors-store.mjs';
+
+const errorText = (e) => String(e && e.message ? e.message : e);
+
+// ------------------------------------------------------------------ 各判据
+
+/** ① 表存在性：缺表时 open 阶段应已重建，这里只核对重建结果。 */
+function checkTables(store) {
+  const have = store.schema.tables;
+  if (!have.vectors || !have.meta) {
+    return { name: '表存在性', status: 'fail', detail: 'vectors 或 meta 表缺失且重建失败' };
+  }
+  const created = store.schema.created;
+  return {
+    name: '表存在性',
+    status: 'ok',
+    detail: created.length ? `缺表已重建：${created.join(', ')}` : 'vectors / meta 均在位',
+    created,
+  };
+}
+
+/** ② 库内 schemaVersion 与代码期望值是否一致（不一致只 warn，不做迁移）。 */
+function checkSchemaVersion(db) {
+  const found = getMeta(db, META_KEYS.schemaVersion);
+  const same = found === SCHEMA_VERSION;
+  return {
+    name: 'schemaVersion',
+    status: same ? 'ok' : 'warn',
+    detail: same ? `=${found}` : `库内为 ${found ?? '(空)'}，代码期望 ${SCHEMA_VERSION}`,
+    schemaVersion: found,
+  };
+}
+
+/** ③ 模型可用性：探针本身可能抛，抛了也算「不可用」而不是让自检崩。 */
+async function probeModel(embedder) {
+  try {
+    return await embedder.health();
+  } catch (e) {
+    return { ready: false, error: errorText(e) };
+  }
+}
+
+function checkModel(health, embedder) {
+  const model = health.model ?? embedder.modelId;
+  const where = health.modelDir ?? health.bridge ?? embedder.kind;
+  return {
+    name: '模型可用性',
+    status: health.ready ? 'ok' : 'fail',
+    detail: health.ready ? `${model} @ ${where}` : `不可用：${health.error || 'unknown'}`,
+    health,
+  };
+}
+
+/** ④ 维度三方比对：实测维 vs 配置维 vs 库内 meta。 */
+async function probeDimension(embedder) {
+  try {
+    const vector = await embedder.encode('维度自检');
+    return { dim: vector.length, error: null };
+  } catch (e) {
+    return { dim: null, error: errorText(e) };
+  }
+}
+
+function checkDimension(probe, db, config, sourceName) {
+  if (probe.error) {
+    return { name: '维度一致', status: 'fail', detail: `编码探测失败：${probe.error}` };
+  }
+  const stored = getMetaFor(db, META_KEYS.dim, sourceName);
+  const fitsConfig = Number(probe.dim) === Number(config.dim);
+  const fitsStore = stored == null || Number(stored) === Number(probe.dim);
+  const status = fitsConfig && fitsStore ? 'ok' : 'fail';
+  const hint = status === 'ok' ? '' : ' ⇒ 需全量重建（--full）';
+  return {
+    name: '维度一致',
+    status,
+    detail: `实测 ${probe.dim} 维 / 配置 ${config.dim} / 库内 ${stored ?? '(空)'}${hint}`,
+    probeDim: probe.dim,
+    configDim: config.dim,
+    metaDim: stored,
+  };
+}
+
+/** ⑤ hostId：向量库明确不跨机同步，库里的 hostId 与当前机器不符 = 库不是本机产物。 */
+function checkHostId(db, config, allowHostMismatch) {
+  const stored = getMeta(db, META_KEYS.hostId);
+  if (!stored) {
+    setMeta(db, META_KEYS.hostId, String(config.hostId));
+    return { name: 'hostId 校验', status: 'ok', detail: `首次初始化，已写入 ${config.hostId}` };
+  }
+  if (stored === String(config.hostId)) {
+    return { name: 'hostId 校验', status: 'ok', detail: `=${stored}` };
+  }
+  return {
+    name: 'hostId 校验',
+    status: allowHostMismatch ? 'warn' : 'fail',
+    detail: `库内 hostId=${stored}，当前=${config.hostId} ⇒ 该库非本机产物，建议全量重建（--full）`,
+    metaHost: stored,
+    current: config.hostId,
+  };
+}
+
+/** ⑥ 覆盖度（信息项，不是判据）：每个来源各有自己的对照物，不能用同一个分母。 */
+function coverageTargets(source, sources, sourceName) {
+  if (sources && sources.length) return sources.map((s) => ({ name: String(s.name), source: s.source }));
+  if (source) return [{ name: String(sourceName), source }];
+  return [];
+}
+
+function checkCoverage(target, db, multi) {
+  const name = multi ? `向量覆盖度(${target.name})` : '向量覆盖度';
+  try {
+    const total = target.source.count();
+    const encoded = countVectors(db, target.name);
+    const pct = total ? (encoded / total) * 100 : 0;
+    return {
+      name,
+      status: 'info',
+      detail: `${target.name} 源：向量 ${encoded} 条 / 源条数 ${total} 条（${pct.toFixed(1)}%）`,
+      sourceName: target.name,
+      vecCount: encoded,
+      memCount: total,
+    };
+  } catch (e) {
+    return { name, status: 'warn', detail: `统计失败：${errorText(e)}` };
+  }
+}
+
+// ------------------------------------------------------------------ 入口
 
 export async function runSelfcheck({
   store,
@@ -16,114 +143,23 @@ export async function runSelfcheck({
 }) {
   const db = store.db;
   const checks = [];
-  const add = (name, status, detail, extra = {}) => {
-    checks.push({ name, status, detail, ...extra });
-    return status;
+  const record = (entry) => {
+    checks.push(entry);
+    return entry.status;
   };
 
-  // ① 表存在性（缺则重建）
-  const t = store.schema.tables;
-  if (t.vectors && t.meta) {
-    add(
-      '表存在性',
-      'ok',
-      store.schema.created.length
-        ? `缺表已重建：${store.schema.created.join(', ')}`
-        : 'vectors / meta 均在位',
-      { created: store.schema.created },
-    );
-  } else {
-    add('表存在性', 'fail', 'vectors 或 meta 表缺失且重建失败');
-  }
+  record(checkTables(store));
+  record(checkSchemaVersion(db));
 
-  // ② schemaVersion
-  const sv = getMeta(db, META_KEYS.schemaVersion);
-  add(
-    'schemaVersion',
-    sv === SCHEMA_VERSION ? 'ok' : 'warn',
-    sv === SCHEMA_VERSION ? `=${sv}` : `库内为 ${sv ?? '(空)'}，代码期望 ${SCHEMA_VERSION}`,
-    { schemaVersion: sv },
-  );
+  const health = await probeModel(embedder);
+  record(checkModel(health, embedder));
 
-  // ③ 模型可用性
-  let health = { ready: false, error: 'not probed' };
-  try {
-    health = await embedder.health();
-  } catch (e) {
-    health = { ready: false, error: String(e && e.message ? e.message : e) };
-  }
-  add(
-    '模型可用性',
-    health.ready ? 'ok' : 'fail',
-    health.ready
-      ? `${health.model ?? embedder.modelId} @ ${health.modelDir ?? health.bridge ?? embedder.kind}`
-      : `不可用：${health.error || 'unknown'}`,
-    { health },
-  );
+  record(checkDimension(await probeDimension(embedder), db, config, sourceName));
+  record(checkHostId(db, config, allowHostMismatch));
 
-  // ④ 维度一致（编码探测 + 与库内 meta / 配置三方比对）
-  let probeDim = null;
-  let probeError = null;
-  try {
-    const v = await embedder.encode('维度自检');
-    probeDim = v.length;
-  } catch (e) {
-    probeError = String(e && e.message ? e.message : e);
-  }
-  const metaDim = getMetaFor(db, META_KEYS.dim, sourceName);
-  if (probeError) {
-    add('维度一致', 'fail', `编码探测失败：${probeError}`);
-  } else {
-    const configOk = Number(probeDim) === Number(config.dim);
-    const metaOk = metaDim == null || Number(metaDim) === Number(probeDim);
-    const status = configOk && metaOk ? 'ok' : 'fail';
-    add(
-      '维度一致',
-      status,
-      `实测 ${probeDim} 维 / 配置 ${config.dim} / 库内 ${metaDim ?? '(空)'}` +
-        (status === 'ok' ? '' : ' ⇒ 需全量重建（--full）'),
-      { probeDim, configDim: config.dim, metaDim },
-    );
-  }
-
-  // ⑤ hostId 校验（向量库明确不同步；hostId 不符说明库来自别的机器）
-  const metaHost = getMeta(db, META_KEYS.hostId);
-  if (!metaHost) {
-    setMeta(db, META_KEYS.hostId, String(config.hostId));
-    add('hostId 校验', 'ok', `首次初始化，已写入 ${config.hostId}`);
-  } else if (metaHost === String(config.hostId)) {
-    add('hostId 校验', 'ok', `=${metaHost}`);
-  } else {
-    add(
-      'hostId 校验',
-      allowHostMismatch ? 'warn' : 'fail',
-      `库内 hostId=${metaHost}，当前=${config.hostId} ⇒ 该库非本机产物，建议全量重建（--full）`,
-      { metaHost, current: config.hostId },
-    );
-  }
-
-  // ⑥ 覆盖度（信息项；非判据）——【2026-10-10 · 补坑库联动A】改成**逐 source** 报告
-  //    ⚠️ 判据不是"向量数 vs 记忆数"这一种：坑源的对照物是**坑库条数**（`butler-pitfalls.json` 的条目数）。
-  const srcList = sources && sources.length
-    ? sources.map((s) => ({ name: String(s.name), source: s.source }))
-    : source
-      ? [{ name: String(sourceName), source }]
-      : [];
-  for (const s of srcList) {
-    const label = srcList.length > 1 ? `向量覆盖度(${s.name})` : '向量覆盖度';
-    try {
-      const memCount = s.source.count();
-      const vecCount = countVectors(db, s.name);
-      const ratio = memCount ? (vecCount / memCount) * 100 : 0;
-      add(label, 'info', `${s.name} 源：向量 ${vecCount} 条 / 源条数 ${memCount} 条（${ratio.toFixed(1)}%）`, {
-        sourceName: s.name,
-        vecCount,
-        memCount,
-      });
-    } catch (e) {
-      add(label, 'warn', `统计失败：${String(e && e.message ? e.message : e)}`);
-    }
-  }
+  const targets = coverageTargets(source, sources, sourceName);
+  const multi = targets.length > 1;
+  for (const target of targets) record(checkCoverage(target, db, multi));
 
   const failed = checks.filter((c) => c.status === 'fail');
   const warned = checks.filter((c) => c.status === 'warn');

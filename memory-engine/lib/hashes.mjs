@@ -1,12 +1,27 @@
-// 记忆引擎 v2 · 离线层 —— 哈希工具
-import crypto from 'node:crypto';
+// 正文与标识的摘要工具。
+//
+// 全仓只用一种算法：sha256 的十六进制形态。选它的理由是**跨机可复算** ——
+// 日志、台账、去重键都拿这个值对齐，换机器重算必须得到同一串。
+import { createHash } from 'node:crypto';
 
-/** 记忆正文哈希（方案 §3.1：text_hash = sha256(text)） */
+const ALGORITHM = 'sha256';
+const SHORT_LEN = 12;
+
+/**
+ * 正文指纹。
+ * 入参先归一到字符串（null / undefined 折成空串），
+ * 免得同一份正文因为传参形态不同算出两个哈希。
+ */
 export function textHash(text) {
-  return crypto.createHash('sha256').update(String(text ?? ''), 'utf8').digest('hex');
+  const source = text == null ? '' : String(text);
+  return createHash(ALGORITHM).update(source, 'utf8').digest('hex');
 }
 
-/** 稳定摘要（日志/报告用） */
-export function shortHash(h, n = 12) {
-  return String(h || '').slice(0, n);
+/**
+ * 截短显示（日志与报告里用）。
+ * 哈希本身是 ASCII 十六进制，按码元切与按码点切结果相同，这里沿用 String#slice。
+ */
+export function shortHash(h, n = SHORT_LEN) {
+  const value = h || '';
+  return String(value).slice(0, n);
 }
