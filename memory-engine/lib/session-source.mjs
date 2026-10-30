@@ -338,8 +338,11 @@ export function extractCandidates(input = {}) {
       continue;
     }
     events += 1;
-    if (!sessionId && event?.type === 'session' && event?.id) sessionId = String(event.id);
-    if (event?.type === 'session' && event?.id && !input.sessionId) sessionId = String(event.id);
+    // session 事件的场次 id：本仓日志用 `id`，别的宿主可能用 `sessionId` ⇒ 两种都认（否则回指会退化成「文件名+行号」）。
+    if (!sessionId && event?.type === 'session') {
+      const sessEventId = event?.id ?? event?.sessionId;
+      if (sessEventId) sessionId = String(sessEventId);
+    }
 
     const { role, texts } = textsOfEvent(event);
     if (role === 'tool' || role === 'system') {

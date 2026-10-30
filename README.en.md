@@ -185,7 +185,10 @@ These never reach the database (each is counted and reported once at the end):
 ### 2. Only conclusions that point back to their source
 
 Every conclusion carries the sentences it was built from: session id + line number + line byte offset +
-**the first 48 characters of the original sentence**. The model may only *synthesize*, and it must report which
+**the first 48 characters of the original sentence**. The session id is taken from the `{"type":"session", …}`
+line of the input log — **both the `id` and the `sessionId` field names are accepted**; if neither is present,
+pass `--session-id`; otherwise everything is labelled `unknown` (provenance degrades to "file name + line number"
+and the CLI says so explicitly). The model may only *synthesize*, and it must report which
 candidates it used (`refs`); out-of-range refs, empty conclusions, anything over 120 characters, and duplicates are
 **dropped outright** (the result's `rejected` list says why). If provenance cannot be established, nothing is written.
 
