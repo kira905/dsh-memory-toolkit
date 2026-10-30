@@ -36,8 +36,8 @@ function positiveInt(value, where) {
 }
 
 /**
- * 读号段配置。号段表**只在配置里**：代码里没有 ROG / M6800 / TUF 这类主机名，
- * 也没有任何"三台机"的假设。
+ * 读号段配置。号段表**只在配置里**：代码里不出现任何具体机器名，
+ * 也没有"必须三台机"的假设（单机装一条 band 就够）。
  */
 export function loadBandConfig({ file = null, env = process.env } = {}) {
   const cfgPath = file ? path.resolve(file) : path.resolve(env.MEMORY_ENGINE_BANDS_FILE || defaultBandsConfigPath());
