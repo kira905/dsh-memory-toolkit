@@ -160,6 +160,82 @@ node cli/layer-move.mjs --help
 node cli/band-sentinel.mjs --help
 ```
 
+## Session logs → memories: the boundaries of distillation — new in 0.2.0
+
+Until now there was exactly one input surface for memories: memories already in the database
+(that is what `cli/distill.mjs` consumes). This release adds a second one — **a session log goes in**,
+and out come ≤N **traceable, batch-revertible** conclusion rows. Two new files; the old entry point is untouched.
+
+| File | What it does | Ships as |
+|---|---|---|
+| `lib/session-source.mjs` | Session JSONL adapter: keeps only conclusion sentences that can point back to their source, each carrying **session + line + byte offset + 48-char verbatim anchor** | local-only, zero dependencies |
+| `cli/distill-sessions.mjs` | New entry point: extract → budget gate → one model call → snapshot → write back (`distilled` prefix + batch tag) | **dry-run** |
+
+### 1. No summary-style writes
+
+What gets kept is the **original sentence**, not a summary of "what this passage was about".
+These never reach the database (each is counted and reported once at the end):
+
+- greetings ("hi", "ok", "got it") and questions (ending in a question mark);
+- process narration ("first … then … next … finally", even if the word "decided" happens to appear);
+- speculation ("I think / maybe / probably"), unless the same sentence also carries a rule word such as "always/must";
+- tool output (tool events, command echoes) and image/thinking blocks;
+- any passage longer than the length cap (240 chars by default) — better dropped than stuffed in.
+
+### 2. Only conclusions that point back to their source
+
+Every conclusion carries the sentences it was built from: session id + line number + line byte offset +
+**the first 48 characters of the original sentence**. The model may only *synthesize*, and it must report which
+candidates it used (`refs`); out-of-range refs, empty conclusions, anything over 120 characters, and duplicates are
+**dropped outright** (the result's `rejected` list says why). If provenance cannot be established, nothing is written.
+
+Tags (same prefix as the older digest rows — that prefix is what the rollback tool matches):
+
+```
+distilled src=<batch key> srcids=<lines,...> date=<YYYYMMDD> sess=<session> run=session:<batch id>
+```
+
+### 3. No daily budget, no run
+
+**If `--max-tokens` is not given and the ledger has no budget either, the model is not called at all**: the tool
+prints "no daily budget configured ⇒ skipping this round (on purpose)" and exits **0** (that is not an error).
+It does **not** inherit the kernel's 150000 default, and it never treats "unconfigured" as "unlimited".
+If the budget is already spent for the day, or this one call is estimated to exceed what is left, it also skips
+and reports usage.
+
+Measured (deepseek-flash, three self-made fixture sessions, one call each): prompt **344–355** + completion
+**80–98** = **424–453 tokens per round** (1311 total; the pre-call estimate is 1018 per round, ~2.3× conservative).
+Suggested `--max-tokens 20000`: roughly 19 rounds/day by estimate, ~45 by measurement.
+
+### Reverting: one batch, one key
+
+One run = one batch = one source key, so reverting is one command (and it reuses the existing rollback tool):
+
+```bash
+node memory-engine/cli/distill-rollback.mjs --db <memory.db> --key <batch key> --apply
+```
+
+The rollback tool takes a `VACUUM INTO` snapshot before deleting and writes a one-shot restore script; its DELETE
+statement always carries `AND tags LIKE 'distilled%'`, so even a wrong key cannot touch real memories.
+`distill-sessions` takes its own pre-write snapshot (`--snapshot-dir`); **if that snapshot fails, nothing is written**.
+
+### Compressed logs (`.jsonl.zstd`) and "never fail silently"
+
+DSH session logs are zstd-compressed, and they are **multi-frame** (one frame per append). `session-source` walks the
+frame structure and decompresses **frame by frame** (node 22.15+ / 24 ship zstd, so still zero dependencies). If it
+cannot decode them it raises a plain-language error telling you to decompress first — it never decodes only the first
+frame, pretends it is done, or returns an empty result silently.
+
+**Reproduce these claims:**
+
+```bash
+cd memory-engine
+node test/run.mjs 13-session-distill   # 40 checks: anchors / multi-frame zstd / budget-gate states / snapshot fail-closed / batch revert
+node cli/distill-sessions.mjs --help
+node cli/distill-sessions.mjs --source <session.jsonl>                      # no budget ⇒ prints "skipped", rc=0
+node cli/distill-sessions.mjs --source <session.jsonl> --max-tokens 30000   # dry-run ⇒ lists what would be written
+```
+
 ## 2. Requirements
 
 - **Node.js ≥ 22** (built-in `node:sqlite`, ESM)

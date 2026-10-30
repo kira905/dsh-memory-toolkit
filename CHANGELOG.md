@@ -61,6 +61,40 @@ hits are contractual strings (the excluded-directory list and the guard's ignore
 
 *English*: layered soft eviction + id-band sentinel (net-new). `layer-migrate` adds a `layer` column and backfills the default layer — zero row deletion, idempotent (second `--apply` is byte-identical), requires an explicit `--db` and a `--backup`, and `--restore` is dry-run by default. `layer-move` moves a whole layer into the in-database side table `memories_evicted` and back, with the hard invariant `moved + remaining == before` asserted in-transaction and per-row `content_sha` verified before restoring. `band-sentinel` checks the `sqlite_sequence`-derived next id against a config-driven band table, judges rows in higher bands red, only *discloses* rows in lower foreign bands, degrades to a single-machine check with no ssh, and never returns 4 for an unreachable peer. All three CLIs are `--help`-readable, fail closed on unknown flags, default to dry-run, and write JSON reports to files only. The 184 existing tests are unchanged and green; `test/12-layering.test.mjs` adds 21 checks.
 
+### 会话日志 → 记忆（K6，净新增件）
+
+记忆的**输入面**补上第二条：一段会话日志进来，产出 ≤N 条可追溯、可整批撤回的结论条。**旧入口（`distill.mjs` / `distill-rollback.mjs` 及其 CLI）的默认值、参数名、退出码一个没改**。
+
+- **会话适配层**（新文件 `lib/session-source.mjs`）：只挑能回指来源的结论句（决定 / 口径 / 偏好 / 修复方案），
+  每条带 `sessionId` + 行号 + 行首字节偏移 + 原文前 48 字锚。寒暄 / 疑问 / 过程叙述 / 推测 / 工具输出 / 超长转述
+  **一律不抽**，逐类计数后一次性报出来。抽的是原句，不做摘要式改写。
+- **新入口**（新文件 `cli/distill-sessions.mjs`）：`--source <jsonl>` → 抽句 → 预算闸 → 一次模型调用 → `VACUUM INTO` 快照 → 写回。
+  缺省 **dry-run**（不调模型、不写库、不写台账）；未知参数 fail-closed（rc=2）；`--json` 必须配 `--out`，**只落文件不上 stdout**。
+- **预算闸（这条是核心）**：没给 `--max-tokens`、台账里也没配 ⇒ **一次模型都不调**，打印「未配置每日预算 ⇒ 本轮不跑（这是故意的）」，rc=0。
+  **不继承**内核 `DAILY_TOKEN_CAP = 150000`，也不"没配 = 无限跑"；当日已超或本次估算会超，同样不跑并打印用量。
+  实测（deepseek-flash，三轮夹具，每轮一次调用）**424 / 424 / 434 token**（合计 1311，prompt 1044 / completion 267），
+  建议 `--max-tokens 20000`（约 19 轮/天按估算、~45 轮/天按实测）。
+- **写回与撤回**：标签 = `distilled src=<批次键> srcids=<行号,...> date=<YYYYMMDD> sess=<场次> run=session:<批次 id>`；
+  一轮一个来源键 ⇒ 撤回直接用既有 `distill-rollback.mjs --key <批次键> --apply`，一批一条命令整组删（不新写撤回器）。
+  写库前快照拍不成 ⇒ **不写库**（fail-closed）。
+- **压缩输入**：`.jsonl.zstd` 走 node 内置 zstd **逐帧**解（DSH 日志一次追加一帧，多帧文件），解不开给人话错误而不是静默失败；
+  当前 node 没有 zstd API 时同样给"请先解压"的提示。
+- **验证**：`memory-engine/test` **既有 205 项一行未改、全绿**；新增 `test/13-session-distill.test.mjs` **40 项**
+  （抽句回指对得上原文 / zstd 单帧多帧坏帧 / 预算闸三态 / 快照 fail-closed / 模型失败也记账 / 幂等 / 整批撤回 /
+  CLI 未知参数与 `--json` 分工）。两个新件对生产同名件的行级同源度见仓根 `k6-progress.jsonl`。
+
+*English*: session logs → memories (net-new). `lib/session-source.mjs` extracts only conclusion sentences that can be
+pointed back to their source (session id + line + byte offset + 48-char verbatim anchor), and drops greetings,
+questions, process narration, speculation, tool output and over-long passages while counting each rejected class.
+`cli/distill-sessions.mjs` is a new entry point that extracts, applies the budget gate, makes exactly one model call,
+takes a `VACUUM INTO` snapshot and writes back — dry-run by default, unknown flags fail closed, and `--json` writes to
+a file only, never to stdout. **No daily budget configured ⇒ the model is not called at all** (rc=0, and it prints
+that this is deliberate); it never inherits the kernel's 150000 cap and never treats "unconfigured" as unlimited.
+Measured over three fixture sessions: 424 / 424 / 434 tokens per round (1311 total), suggesting `--max-tokens 20000`.
+Each run maps to one source key, so reverting is the existing `distill-rollback.mjs --key <batch key> --apply`.
+Compressed `.jsonl.zstd` input is decoded frame by frame with node's built-in zstd; failures raise a plain-language
+error instead of returning partial data. The 205 existing tests are unchanged and green; the new test file adds 40 checks.
+
 ## v0.1.3 — 2026-10-30
 
 **主包补 bundle 声明 + 子路径导出面**（修「装完不生效」；无插件行为变化）：
