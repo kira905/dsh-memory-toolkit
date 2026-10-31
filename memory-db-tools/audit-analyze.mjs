@@ -3,7 +3,7 @@
 // 固化自早期临时脚本（2026-09-25 体检工具链固化）
 //   · 去硬编码：输入/输出目录改为 --in <memories.json> / --out <dir>，默认落系统临时目录，不再写死 _tmp
 //   · 加 --help / --self-test / --json · 收尾 process.exitCode
-// 产物（6 个）：list-lines.txt（首行清单）· list-nodev.txt（含机器特征词却无【设备：】的候选）·
+// 产物（6 个）：list-lines.txt（首行清单）· list-nodev.txt（含机器特征词却无设备标的候选）·
 //              dup-pairs.txt（重复对，6-gram Jaccard）· keyword-hits.txt（过期关键词命中）·
 //              pinned-full.txt（pinned 全文）· stats.json（统计）
 // 只读：只读 memories.json；不碰 memory.db；产物只写 --out（默认临时目录）。
@@ -133,7 +133,7 @@ export function analyze(mems, opts = {}) {
   });
   files["list-lines.txt"] = lines.join("\n");
 
-  // 2) 设备标缺失（含机器特征词却无【设备：】）
+  // 2) 设备标缺失（含机器特征词却无设备标）
   const nodev = mems.filter((m) => !/【设备[：:]/.test(m.text) && MACHINE_RE.test(m.text));
   files["list-nodev.txt"] = nodev
     .map((m) => `#${m.id} ${m.text.length}c | ${m.text.split("\n")[0].replace(/\s+/g, " ").slice(0, 110)}`)
@@ -241,7 +241,7 @@ const USAGE = `audit-analyze.mjs — 季度记忆库体检 · 第 2 站：六项
 
 产物（写在 --out 下）：
   list-lines.txt   全部条目首行清单
-  list-nodev.txt   含机器特征词但无【设备：】的漏标候选
+  list-nodev.txt   含机器特征词但无设备标的漏标候选
   dup-pairs.txt    重复对（6-gram Jaccard ≥ 0.15）
   keyword-hits.txt 19 组过期关键词命中 id
   pinned-full.txt  pinned 全文

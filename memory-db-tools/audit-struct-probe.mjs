@@ -3,7 +3,7 @@
 // 固化自早期临时脚本（2026-09-25 体检工具链固化）
 //   · 数据源改为 --in <memories.json>（默认系统临时目录，不再写死 _tmp 路径）
 //   · 加 --help / --self-test / --json · 收尾 process.exitCode
-// 用途：看两类结构异常 —— ①【设备：X】写了但 X 不在「已知设备名」清单里（OTHER）
+// 用途：看两类结构异常 —— ①写了设备标但名字不在「已知设备名」清单里（OTHER）
 //       ②一条里写了两个设备标（DOUBLE）；
 //       顺带给出 pinned 各条字符数与最长的非 pinned 条目（persona 瘦身候选）。
 // 已知设备名不是硬编码：见 lib/known-devices.mjs（配置 memory-engine/config/audit-devices.json
