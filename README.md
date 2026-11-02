@@ -1,5 +1,31 @@
 # dsh-memory-toolkit
 
+> ### 这是什么
+> **Agent 的记忆层**：向量召回 + FTS5 关键词双路、命中留痕、分层软淘汰，外加一整套**只读**记忆库体检器具。
+>
+> ### 它解决什么
+> 「它怎么又忘了」和「它怎么记错了」其实是同一件事的两面：**召回不可解释**。这里做两件事 —— ① 每次召回都留痕：哪条记忆、因为什么被捡回来，可审计；② 淘汰是**软**的：搬走不等于删，能查、能恢复。另附 persona ↔ 记忆重叠体检，防止同一件事被写进两处。
+>
+> ### 一条命令跑起来
+> ```powershell
+> npm i -g @kira905/dsh-memory-toolkit
+> dsh-memory-summary        # 新会话开工简报（只读，dsh 运行中也安全）
+> dsh-memory-audit          # persona ↔ 记忆 体检
+> ```
+>
+> ### 先看它长什么样（真实输出）
+> ```text
+> list-memory-summary.mjs — 新会话开工简报（只读，dsh 运行中也可安全执行）
+> 用法：node list-memory-summary.mjs [选项]
+>   --home <dir>            DSH home（缺省 $DSH_HOME 或 ~/.dsh）
+>   --session <id>         指定会话 id（缺省读 DSH_SESSION_ID）
+>   --query <text>         直接给召回查询文本（缺省取会话上下文）
+> ```
+>
+> 三个 CLI 全部只读、不启服务。装法与自检见下方「装完自检」。
+
+---
+
 > **本仓装完即用**（0.1.3 起）：`dsh plugin --profile <profile> add @kira905/dsh-memory-toolkit` 一条命令，`dsh.bundle` 会让它自动挂进 profile 的组合列表，**不需要再手工写 `cordis.patch.yml`**。包内 3 个 CLI（`dsh-memory-audit` / `dsh-memory-summary` / `dsh-memory-export`）与挂载无关，`npm i -g` 或 `npx` 直接用。
 
 ## 装完自检（三条只读验法）

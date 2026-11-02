@@ -1,5 +1,31 @@
 # dsh-memory-toolkit
 
+> ### What this is
+> **An agent memory layer**: vector recall plus FTS5 keyword recall, recall provenance, tiered soft eviction, and a whole set of **read-only** memory-DB audit tools.
+>
+> ### What it solves
+> "Why did it forget again" and "why did it remember the wrong thing" are two sides of one problem: **recall is not explainable**. This does two things — (1) every recall leaves a trace: which memory, and why it was picked, auditable; (2) eviction is **soft**: moved away is not deleted, still queryable and recoverable. It also audits persona ↔ memory overlap, so one fact is not written down twice.
+>
+> ### Run it in one command
+> ```powershell
+> npm i -g @kira905/dsh-memory-toolkit
+> dsh-memory-summary        # new-session briefing (read-only, safe while dsh is running)
+> dsh-memory-audit          # persona <-> memory overlap audit
+> ```
+>
+> ### Real output
+> ```text
+> list-memory-summary.mjs - new-session briefing (read-only, safe while dsh is running)
+> Usage: node list-memory-summary.mjs [options]
+>   --home <dir>            DSH home (default $DSH_HOME or ~/.dsh)
+>   --session <id>          session id (default: DSH_SESSION_ID)
+>   --query <text>          explicit recall query (default: current session context)
+> ```
+>
+> All three CLIs are read-only and start no service. Install steps and self-checks are below.
+
+---
+
 **Memory-side tooling for DSH (DeepSeek Harness).** A standalone vector memory engine, a read-only
 memory-database audit toolkit, a self-maintained fork of the local memory plugin, and a tiny
 persona ↔ memory audit.
