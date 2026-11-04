@@ -3,6 +3,68 @@
 本仓的版本按**语义化版本**：改结论/改契约升主版本，加能力升次版本，修错别字与文档订正不升。
 英文摘要见每节末尾的 *English* 行。
 
+## v0.3.0 — 2026-11-05
+
+**给记忆加了两件事：它从哪来（来源血缘），它到什么时候为止（时效）。** 都是**加能力**，不破既有行为。
+
+### ① 来源血缘 `source_ids`（独立列，绝不进 tags）
+
+- `memories` 新增一列 `source_ids TEXT NOT NULL DEFAULT ''`，值 = JSON 数组字符串
+  （如 `["chunk-123","chunk-456"]`），空串 = 无来源声明（与存量逐字节同形）。
+  **绝不写进 `tags`** —— tags 在 FTS 索引里，塞进去会污染全文检索（搜一个 id 能搜出整条记忆，
+  且 tags 会被渲染进注入面）。本仓有断言守着这一条（搜 id token ⇒ 0 命中）。
+- 写法：`memory_write` 新增可选参数 `source_ids`（数组）；`MemoryStore#write()` 第四参数；
+  读回：`MemoryStore#readSourceIds(id)`（解析失败按空处理，绝不抛）。
+- **迁移**：显式版本键放库内新表 `schema_meta`（`memories.source_ids = 0/1`），
+  **不用** `PRAGMA user_version` —— 打开链路里有一行 `PRAGMA user_version = N` 每连接无条件覆写，
+  放进去等于键不存在。建 meta 表 + 加列 + 写键在**同一事务**里，原子。
+- **fail-closed**：列在 + 键=1 才算迁移完成；其它组合（半迁移 / 键被改过）⇒ **拒写**并抛
+  `code = E_MEMORY_SCHEMA_VERSION_MISMATCH`，不把"读不到列"当成"没有来源"继续跑。
+- 写入口对来源 id 是**宽容**的：脏值丢弃、去重保序、单条 ≤200 字 / 最多 200 条（超限只截断，
+  绝不因此拒绝写入）—— 血缘是观察级附加信息，不能反过来挡写记忆。
+
+### ② 记忆时效 `until:YYYYMMDD`（过期不删，降权 + 标出）
+
+- 落点 = **tags**（与既有 `src:<kind>#<token>;` 回指习惯一致）⇒ 只加标签、不加列、不改表。
+  认标准 `until:20251130`、空格分隔 `until: 20251130`、以及 `2025-11-30` / `"20251130"` 几种写法；
+  认不出来的一律当"无期限"（**fail-open**），只在统计里留一条"格式不认识"。
+- **过期条目不删**：`memory_search` 走**稳定分区**（过期整体后移，两组内部名次一字不动，
+  结果集不增不删）；注入侧的指针走**标注位降权**（名次不动，整行带「已过期（until …）」）。
+  为什么两种：指针有 800 字 / 8 条硬预算，后移会把过期条目直接挤出渲染集 = 实质等于删掉。
+- 渲染层：`pointerLine` / 搜索结果的过期标注**从本行摘要里让位**（逐字缩摘要，缩到 40 字仍放不下
+  才放弃该条标注），800 字 / 600 token 硬预算一个字没放宽。
+- 无一条带 `until:` 时：`rrfFuse` / `cosineTopK` / `bm25` 一字未碰，渲染输出与改动前**逐字节一致**
+  （有阴性对照测试守着）。
+- 急救关：`MEMORY_UNTIL=0` ⇒ 全部按"无期限"处理，与没有本能力时逐字一致。
+
+### 不在本版范围（属部署侧私有实现）
+
+**多用户 / 身份范围过滤**（可见性枚举的运行时判定、按身份 fail-closed 的召回闸）、设备认账标记、
+层标与写入影子判定、`src` 回指参数 —— 这些是具体部署的私有实现，**本仓不含其代码、夹具或口径**。
+本版只把上面两件与部署无关的通用能力提炼出来，实现与部署件语义等价（逐点对照见发版报告）。
+
+### 发布包变化
+
+- **测试不进 npm 包**：`files` 里排除 `dsh-memory-local/test/`、`memory-engine/test/`、
+  `memory-db-tools/_test/` ⇒ 打包文件 164 → 137，解包体积 3.2 MB → 2.7 MB。
+  测试仍在仓里（`npm test` 照跑），只是不再塞进用户安装面。
+- `npm test` 增加两套新单测（时效 / 血缘），并新增 `npm run test:memory`、`npm run test:recall`。
+
+*English*: two additive capabilities. (1) **Provenance** — `memories` gains an independent
+`source_ids` column (JSON array string, empty = none) that is *never* written into `tags`, because
+tags is full-text indexed. Migration uses an explicit version key in a new `schema_meta` table
+(not `PRAGMA user_version`, which the open path overwrites) inside a single transaction, and is
+fail-closed: a half-migrated database refuses writes with `E_MEMORY_SCHEMA_VERSION_MISMATCH` rather
+than silently treating "column missing" as "no provenance". (2) **Expiry** — `until:YYYYMMDD` in tags;
+expired rows are **never deleted**: `memory_search` moves them to the end with a stable partition,
+the recall pointer keeps their rank and marks the line `已过期（until …）` instead (moving them out
+would silently equal deletion under its hard 800-char budget). Rendering pays for the mark out of the
+line's own summary, never out of the budget. With no `until:` anywhere the output is byte-identical
+to before; `MEMORY_UNTIL=0` disables the whole feature. Multi-user / identity-scoped filtering, device
+attribution marks, layer tags and the `src` back-reference are deployment-private and are **not**
+included here. Tests are no longer shipped inside the npm tarball (164 → 137 files).
+
+
 ## v0.2.1 — 2026-11-04
 
 **把真实账号从代码里移除**（安全修复）。⚠️ 如实说明：**v0.2.0 及更早的包仍带着它**（已发布在 npm，

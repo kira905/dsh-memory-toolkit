@@ -81,6 +81,36 @@ Test-Path "$env:APPDATA\npm\dsh-memory-summary.CMD"                           # 
 - **怎么复跑**：同源度扫描器见 `dsh-quality-toolkit` 的 `dsh-sim-scan.mjs`（`--repo <本仓> --prod-root <参照根>`）；分档阈值与口径写在它的 `config/sim-scan.json` 里，不藏在代码里。
 - **许可**：本仓许可见仓根 `LICENSE`（有子树例外时以子树 `LICENSE` 为准）。
 
+## 来源血缘与记忆时效（0.3.0 新增）
+
+两件与部署无关的通用能力，都在 `dsh-memory-local/` 里，**都不改既有行为**。
+
+### ① 来源血缘 `source_ids`
+
+一条记忆可以说清"它是从哪几条观察推出来的"。
+
+- **落点 = 独立列**（`memories.source_ids TEXT NOT NULL DEFAULT ''`，JSON 数组字符串；空串 = 无来源声明）。
+  **绝不写进 `tags`** —— tags 在 FTS 索引里，塞进去会污染全文检索。
+- 写法：`memory_write` 多一个可选参数 `source_ids`；读回：`MemoryStore#readSourceIds(id)`。
+- **迁移有显式版本键**（库内新表 `schema_meta`，`memories.source_ids = 0/1`），建表 + 加列 + 写键同一事务。
+  不用 `PRAGMA user_version`：打开链路里有一行 `PRAGMA user_version = N` 每连接无条件覆写，放进去等于没写。
+- **fail-closed**：半迁移（列在键缺 / 键被改过）⇒ 拒写并抛 `E_MEMORY_SCHEMA_VERSION_MISMATCH`，
+  不把"读不到列"当成"没有来源"继续跑。
+
+### ② 记忆时效 `until:YYYYMMDD`
+
+有时效的判断（"这周先把 X 当默认值"）给个到期日，到期后**不删**、只是降权并标出来。
+
+- 落点 = **tags**（`until:20251130`），只加标签、不加列、不改表；认不出来的一律当"无期限"（fail-open）。
+- `memory_search` 走**稳定分区**（过期整体后移、组内名次不动、结果集不增不删）；
+  注入侧的指针走**标注位降权**（名次不动、整行带「已过期（until …）」）——
+  指针有 800 字 / 8 条硬预算，后移会把过期条目挤出渲染集 = 实质等于删掉。
+- 没有一条带 `until:` 时，渲染输出与改动前**逐字节一致**（有阴性对照测试守着）。
+- 急救关：`MEMORY_UNTIL=0` ⇒ 全部按"无期限"处理。
+
+> 多用户 / 身份范围过滤、设备认账标记、层标与写入影子判定、`src` 回指参数属部署侧私有实现，
+> **不在本仓**（不含其代码、夹具或口径）。
+
 ## 召回链：降级 / 词表第二路 / 命中留痕（0.2.0 新增）
 
 召回有三类老毛病，这一版各给一条**可一键关回**的解法；出厂默认一条都没改。

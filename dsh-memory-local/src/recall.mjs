@@ -7,6 +7,8 @@
  * （`./vectors-store.mjs` → `./vectors-read.mjs`，插件侧只读、不写向量库）。
  */
 import { loadMatrix } from './vectors-read.mjs';
+// FORK-EDIT(2026-11-04 · 记忆时效)：过期判定 / 稳定分区纯函数（同目录，构建一并拷进 lib/）
+import { annotateHits } from './until-expiry.mjs';
 
 /** 触发判定（方案 §3.3 Z16 已吸收） */
 export function shouldTrigger(rawQuery) {
@@ -112,6 +114,11 @@ export async function recall({
   rrfK = 60,
   resultTopK = 8,
   log = () => {},
+  // FORK-EDIT(2026-11-04 · 记忆时效)：参考时刻（缺省 Date.now()；夹具固定日期用，生产不传）
+  nowMs = null,
+  // FORK-EDIT(2026-11-04 · 记忆时效)：过期条目要不要**后移**（默认要 = 工具路径的排序降权）。
+  // 注入件传 false ⇒ 只标注不位移（硬预算下后移会把过期条目挤出渲染集 = 实质等于"删"）。
+  untilReorder = true,
 }) {
   const t0 = performance.now();
   const gate = shouldTrigger(query);
@@ -160,7 +167,7 @@ export async function recall({
     ],
     rrfK,
   );
-  const hits = fused.slice(0, Number(resultTopK) || 8).map((h) => ({
+  let hits = fused.slice(0, Number(resultTopK) || 8).map((h) => ({
     refId: h.id,
     id: Number(h.id),
     score: h.score,
@@ -168,6 +175,25 @@ export async function recall({
     vectorRank: h.ranks.vector ?? null,
     ftsRank: h.ranks.fts ?? null,
   }));
+  // FORK-EDIT(2026-11-04 · 记忆时效)：过期降权 —— 由 `untilReorder` 决定两种形态：
+  //   · true（工具 memory_search 用）  = **稳定分区**：过期条目整体后移、两组内部名次一字不动；
+  //   · false（指针注入用）            = **标注位降权**：名次不动、整行带「已过期（until …）」。
+  //     为什么注入侧不许后移：指针硬预算 800 字 / 8 条，后移会把过期条目直接挤出渲染集
+  //     （实测 5 条夹具、2 条过期 ⇒ 后移后这两条一条都渲染不出来）= 实质"删"，违反「过期不删」。
+  //   两条形态共同点：结果集不增不删、`rrfFuse` / `cosineTopK` / `bm25` 一个字不碰。
+  //   fail-open：取 tags / 判定出任何意外 ⇒ 一条都不标（`until=null`），与改动前逐字一致。
+  let untilStats = { expired: 0, ids: [], invalid: [], today: null, downgraded: 0, reordered: false, disabled: false };
+  try {
+    const tagById = new Map();
+    if (source && typeof source.rowsByIds === 'function' && hits.length > 0) {
+      for (const row of source.rowsByIds(hits.map((h) => h.id))) tagById.set(String(row.id), row.tags);
+    }
+    const ann = annotateHits(hits, tagById, nowMs, { reorder: untilReorder !== false });
+    hits = Array.isArray(ann.items) ? ann.items : hits;
+    untilStats = ann.stats;
+  } catch (e) {
+    log(`[recall] until 标注降级（本轮不标注、不降权）：${String((e && e.message) || e)}`);
+  }
   const fuseMs = performance.now() - tFuse;
 
   const totalMs = performance.now() - t0;
@@ -187,6 +213,8 @@ export async function recall({
       ftsMatched,
       ftsHits: ftsHits.length,
       fused: fused.length,
+      // FORK-EDIT(2026-11-04 · 记忆时效)：过期统计（只增字段；expired/ids/invalid/today/downgraded/disabled）
+      until: untilStats,
     },
   };
 }

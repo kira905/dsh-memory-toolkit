@@ -63,6 +63,45 @@ Some files in this repository **share a source with an internal production imple
 - **License**: see `LICENSE` at the repository root (when a subdirectory carries its own exception, that
   subdirectory's `LICENSE` wins).
 
+## Provenance and expiry — new in 0.3.0
+
+Two capabilities that have nothing to do with any particular deployment. Both live in `dsh-memory-local/`
+and neither changes existing behaviour.
+
+### 1. Provenance (`source_ids`)
+
+A memory can say which observations it was derived from.
+
+- **Lands in its own column** (`memories.source_ids TEXT NOT NULL DEFAULT ''`, a JSON array string;
+  empty string = no provenance). **Never in `tags`** — tags is full-text indexed, and writing ids there
+  pollutes full-text search.
+- Write it with the optional `source_ids` argument of `memory_write`; read it back with
+  `MemoryStore#readSourceIds(id)`.
+- **Migration carries an explicit version key** (a new `schema_meta` table, `memories.source_ids = 0/1`);
+  create-table + add-column + write-key run in one transaction. Not `PRAGMA user_version`: the open path
+  overwrites it on every connection, so a key stored there would effectively not exist.
+- **Fail-closed**: a half-migrated database (column present, key missing, or key tampered with) refuses
+  writes with `E_MEMORY_SCHEMA_VERSION_MISMATCH` instead of treating "cannot read the column" as "no
+  provenance".
+
+### 2. Expiry (`until:YYYYMMDD`)
+
+Give a time-bounded judgement ("treat X as the default this week") an end date; once it passes the row is
+**not deleted** — it is downgraded and marked.
+
+- Lands in **tags** (`until:20251130`): tags only, no column, no schema change. Anything unrecognised
+  counts as "no expiry" (fail-open).
+- `memory_search` uses a **stable partition** (expired rows move to the end, intra-group order untouched,
+  nothing added or dropped). The recall pointer instead keeps the rank and marks the line
+  `已过期（until …）` — its 800-char / 8-item budget is hard, and moving rows out would silently equal
+  deleting them.
+- With no `until:` anywhere, rendered output is **byte-identical** to before (a negative-control test
+  guards this).
+- Kill switch: `MEMORY_UNTIL=0` treats everything as having no expiry.
+
+> Multi-user / identity-scoped filtering, device attribution marks, layer tags, the write-time shadow
+> verdict and the `src` back-reference are deployment-private and are **not** part of this repository.
+
 ## Recall chain: degradation / second (lexicon) path / hit log — new in 0.2.0
 
 Three long-standing recall problems, each with a fix you can switch off in one move. **No shipped

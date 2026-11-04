@@ -60,9 +60,17 @@ declare class MemoryStore {
    * @param text - the fact to remember.
    * @param tags - normalized tag list.
    * @param pinned - whether it always renders in the prompt section.
+   * @param sourceIds - optional provenance: the observation ids this fact was derived from
+   *   (stored in its own `source_ids` column as a JSON array; never in `tags`).
    * @returns the new record.
    */
-  write(text: string, tags: string, pinned: boolean): MemoryRecord;
+  write(text: string, tags: string, pinned: boolean, sourceIds?: readonly (string | number)[]): MemoryRecord;
+  /**
+   * Read back the provenance (`source_ids`) of one memory.
+   * @param id - the record id.
+   * @returns the observation ids, or an empty array when none was recorded (never throws).
+   */
+  readSourceIds(id: number): string[];
   /**
    * Full-text search over memory text and tags, best match first.
    * @param query - free-text query; FTS operators in it are matched literally.

@@ -268,6 +268,9 @@ export function createRecallInjector({
         ftsTopK: config.ftsTopK,
         rrfK: config.rrfK,
         resultTopK: config.resultTopK,
+        // FORK-EDIT(2026-11-04 · 记忆时效)：指针走「标注位降权」——硬预算下后移会把过期条目
+        // 挤出渲染集（= 实质删掉），所以这里只要标注、不要位移。
+        untilReorder: false,
       });
       if (!r.triggered) return skip(`recall-${r.reason}`);
 
@@ -275,11 +278,22 @@ export function createRecallInjector({
       const rows = source.rowsByIds(ids);
       const byId = new Map(rows.map((row) => [Number(row.id), row]));
       const ordered = ids.map((id) => byId.get(Number(id))).filter(Boolean);
+      // FORK-EDIT(2026-11-04 · 记忆时效)：过期标注 —— recall 已经判好并给了 `expiryNote`，
+      // 这里只做 id → 标注的查表；一条过期的都没有 ⇒ `expiryOf = null` ⇒ 渲染层第二遍一个字节都不碰。
+      const expiryOf = (() => {
+        const m = new Map(
+          r.hits
+            .filter((h) => h && h.expiryNote)
+            .map((h) => [String(h.id), h.expiryNote]),
+        );
+        return m.size ? (row) => m.get(String(row.id)) || '' : null;
+      })();
       const rendered = renderPointer(ordered, {
         maxItems: config.maxItems,
         maxChars: config.maxChars,
         maxTokens: config.maxTokens,
         summaryChars: config.summaryChars,
+        expiryOf,
       });
       if (!rendered.text || !rendered.items.length) return skip('no-renderable-hits');
 
@@ -306,6 +320,14 @@ export function createRecallInjector({
         bridgePort: health.port,
         model: health.model,
         ms: now() - t0,
+        // FORK-EDIT(2026-11-04 · 记忆时效)：本轮过期标注情况（只增字段；无 `until:` 时全 0）
+        expiry: {
+          expired: (r.stats && r.stats.until ? r.stats.until.expired : 0) || 0,
+          downgraded: (r.stats && r.stats.until ? r.stats.until.downgraded : 0) || 0,
+          marked: rendered.expiryMarked || 0,
+          dropped: rendered.expiryDropped || 0,
+          invalid: (r.stats && r.stats.until ? r.stats.until.invalid : []) || [],
+        },
         ...base,
       };
       // 硬超时已放弃 / 已超预算 ⇒ 本轮不注入（调用方拿到的是 skip），也不落 inject 行

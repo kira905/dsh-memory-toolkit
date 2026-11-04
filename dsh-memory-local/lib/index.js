@@ -105,6 +105,10 @@ import { createRecallInjector, lastUserText, SOURCE_KIND, SOURCE_VERSION } from 
 import { createUserMessage } from "./user-message.mjs";
 // FORK-EDIT(2026-09-21): 记忆引擎 v2 · S3b —— 表结构自检（`owner_user` / `visibility` 两列 + 索引，方案 §3.8/§3.9）
 import { ensureMemoryColumns, writeSchemaLog } from "./schema-migrate.mjs";
+// FORK-EDIT(2026-11-04): 观察级血缘列 `source_ids` —— 显式迁移键（库内 `schema_meta`）+ 读写归一
+import { ensureSourceIdsColumn, serializeSourceIds, parseSourceIds } from "./source-ids-migrate.mjs";
+// FORK-EDIT(2026-11-04): 记忆时效 —— `until:YYYYMMDD` 过期标注（纯函数；只读 tags，不碰表结构）
+import { annotateMatches, expiryNoteOf } from "./until-expiry.mjs";
 // FORK-EDIT(2026-09-22): U3 adapter 接入 —— 宿主事实（ctx 服务名）收敛到适配层唯一源。
 // `inject` 是宿主契约声明、名字无法用"语义调用"消除，只能从 SVC 取常量（方案 §10.2 解法 A）。
 import { SVC } from "./host-adapter.js";
@@ -181,6 +185,8 @@ var MemoryStore = class {
 	#closed = false;
 	/** FORK-EDIT(2026-09-21): 库不可用原因（null = 正常）。不可用时**只读接口返回空、写接口抛明确错误**。 */
 	#unavailable = null;
+	/** FORK-EDIT(2026-11-04): 库路径快照（只为旁挂日志指路，不参与任何行为判断）。 */
+	#dbPath = null;
 	/**
 	* Open (creating if absent) the store at `path`, applying the schema.
 	* @param path - database file path, or `:memory:` for an ephemeral store.
@@ -188,6 +194,7 @@ var MemoryStore = class {
 	constructor(path) {
 		if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
 		this.openWarnings = [];
+		this.#dbPath = path;
 		const reason = (e) => (e && e.message ? e.message : String(e));
 		// ── FORK-EDIT(2026-09-21): 记忆引擎 v2 · S3b「绝不阻断 DSH 启动」加固 ──────────────────
 		// 背景（真机实测 2026-09-21，证据见内部交付记录 §B/C 与 §E2；该记录不在本仓）：
@@ -243,6 +250,11 @@ var MemoryStore = class {
 			};
 		} else {
 			this.schemaCheckResult = ensureMemoryColumns(this.#db, { dbPath: path });
+			// FORK-EDIT(2026-11-04): 观察级血缘列 `source_ids` 的迁移 + fail-closed 闸。
+			// 位置：紧跟表结构自检之后（此刻库已打开、任何写入都还没发生），结果并进同一份快照。
+			const sid = ensureSourceIdsColumn(this.#db, { dbPath: path });
+			this.schemaCheckResult.sourceIds = { state: sid.state, ok: sid.ok, ran: sid.ran, error: sid.error };
+			if (sid.writeBlocked) this.schemaCheckResult.writeBlocked = sid.writeBlocked;
 		}
 		// FORK-EDIT(2026-09-21): 打开阶段的异常一律落一行日志（否则"库坏了/只读了"会与"库健康"
 		// 看起来一模一样 —— 无人抽检就静默失效）。
@@ -260,14 +272,27 @@ var MemoryStore = class {
 	* @param text - the fact to remember.
 	* @param tags - normalized tag list.
 	* @param pinned - whether it always renders in the prompt section.
+	* @param sourceIds - FORK-EDIT(2026-11-04): optional provenance (observation ids the fact was
+	*   derived from). Omitted / empty ⇒ the original five-column INSERT runs unchanged, so the
+	*   stored value is the column default `''` and the write is byte-for-byte what it was before.
 	* @returns the new record.
 	*/
-	write(text, tags, pinned) {
+	write(text, tags, pinned, sourceIds) {
 		// FORK-EDIT(2026-09-21): 降级 store（库打不开/建表失败）⇒ 写接口给**明确原因**的错误，
 		// 不静默丢弃主人的记忆（上层工具会把这条错误原样带回模型）。
 		if (this.#isDown()) throw new Error(`memory: 记忆库不可用（${this.#unavailable}）—— 本次写入未落库`);
+		// FORK-EDIT(2026-11-04): fail-closed —— 迁移版本键与代码期望不符（半迁移 / 键被改过）⇒ 拒绝写入。
+		const blocked = this.schemaCheckResult && this.schemaCheckResult.writeBlocked;
+		if (blocked) {
+			const err = new Error(`memory: 记忆库表结构版本不符，拒绝写入 —— ${blocked.reason} [${blocked.code}]`);
+			err.code = blocked.code;
+			throw err;
+		}
 		const now = Date.now();
-		return toRecord(this.#db.prepare("INSERT INTO memories (text, tags, pinned, created_at, updated_at) VALUES (?, ?, ?, ?, ?) RETURNING *").get(text, tags, pinned ? 1 : 0, now, now));
+		// FORK-EDIT(2026-11-04): 无来源声明 ⇒ 走**原来那条**五列 SQL（与改动前逐字节等价）
+		const lineage = serializeSourceIds(sourceIds);
+		if (lineage === "") return toRecord(this.#db.prepare("INSERT INTO memories (text, tags, pinned, created_at, updated_at) VALUES (?, ?, ?, ?, ?) RETURNING *").get(text, tags, pinned ? 1 : 0, now, now));
+		return toRecord(this.#db.prepare("INSERT INTO memories (text, tags, pinned, created_at, updated_at, source_ids) VALUES (?, ?, ?, ?, ?, ?) RETURNING *").get(text, tags, pinned ? 1 : 0, now, now, lineage));
 	}
 	/**
 	* Full-text search over memory text and tags, best match first.
@@ -302,6 +327,32 @@ var MemoryStore = class {
 		if (this.#isDown()) return void 0;
 		const row = this.#db.prepare("SELECT * FROM memories WHERE id = ?").get(Number(id));
 		return row === void 0 ? void 0 : toRecord(row);
+	}
+	/**
+	* FORK-EDIT(2026-11-04): 读回这条记忆的观察级血缘（`source_ids`）。
+	* **绝不抛**：读不到 / 解析失败 ⇒ 返回 `[]` 并留一行旁挂日志（这条链路可能出现在渲染里）。
+	* @param id - the record id.
+	* @returns {string[]} 来源 id 数组（空数组 = 无来源声明）。
+	*/
+	readSourceIds(id) {
+		if (this.#isDown()) return [];
+		try {
+			const row = this.#db.prepare("SELECT source_ids FROM memories WHERE id = ?").get(Number(id));
+			if (row === void 0) return [];
+			const raw = row.source_ids;
+			const list = parseSourceIds(raw);
+			if (list.length === 0 && typeof raw === "string" && raw.length > 0) {
+				writeSchemaLog({ dbPath: this.#dbPath }, { event: "source-ids-parse-failed", id: Number(id) || null, len: raw.length });
+			}
+			return list;
+		} catch (e) {
+			try {
+				writeSchemaLog({ dbPath: this.#dbPath }, { event: "source-ids-read-failed", id: Number(id) || null, error: e && e.message ? String(e.message) : String(e) });
+			} catch {
+				/* 日志失败也不影响读取 */
+			}
+			return [];
+		}
 	}
 	/**
 	* The memories the prompt section renders: pinned first, then most recently
@@ -438,11 +489,14 @@ const FORGET_DESCRIPTION = "Delete one stored memory by id, for a fact that is n
 /**
 * Render one memory as a prompt line.
 * @param record - the memory to render.
+* @param expiryMark - FORK-EDIT(2026-11-04): 过期标注（`已过期（until …）`）；空串 = 不标。
+*   缺省空串 ⇒ 整行与改动前逐字节一致（常驻段 pinned/recent 也走这条函数，故它们一个字节都没变）。
 * @returns a single line carrying the id, tags, and text.
 */
-function promptLine(record) {
+function promptLine(record, expiryMark = "") {
 	const tags = record.tags.length > 0 ? ` [${record.tags}]` : "";
-	return `- (#${record.id}${record.pinned ? ", pinned" : ""})${tags} ${record.text}`;
+	const mark = expiryMark ? ` ${expiryMark}` : "";
+	return `- (#${record.id}${record.pinned ? ", pinned" : ""})${mark}${tags} ${record.text}`;
 }
 /**
 * Render the prompt section body under a character budget. Pinned memories are
@@ -703,6 +757,13 @@ function apply(ctx, config) {
 			pinned: {
 				type: "boolean",
 				description: "Always show this memory in context. Reserve it for facts that matter in every session."
+			},
+			// FORK-EDIT(2026-11-04): 可选 `source_ids`（观察级血缘：这条结论是从哪几条观察推出来的）。
+			// 不传 ⇒ 落库值 = ''（与存量逐字节同形）；**绝不写进 tags**（tags 在 FTS 索引里，塞进去会污染全文检索）。
+			source_ids: {
+				type: "array",
+				items: { type: "string" },
+				description: "Optional provenance: the observation ids this memory was derived from (array of strings, stored as a JSON array in its own column — never in `tags`, which is full-text indexed). Omit to store an empty provenance."
 			}
 		},
 		output: {
@@ -739,7 +800,7 @@ function apply(ctx, config) {
 			const text = args.text.trim();
 			if (text.length === 0) throw new Error("memory_write: `text` must not be blank");
 			if (text.length > config.maxTextChars) throw new Error(`memory_write: \`text\` is ${text.length} chars, over the ${config.maxTextChars} limit`);
-			const record = open().write(text, normalizeTags(args.tags ?? []), args.pinned ?? false);
+			const record = open().write(text, normalizeTags(args.tags ?? []), args.pinned ?? false, args.source_ids);
 			return {
 				id: record.id,
 				tags: record.tags,
@@ -798,7 +859,7 @@ function apply(ctx, config) {
 					...match,
 					createdAt: 0,
 					updatedAt: 0
-				})).join("\n")
+				}, expiryNoteOf(match.tags))).join("\n")
 			}],
 			presentationMeta: (_args, value) => ({ count: value.matches.length })
 		},
@@ -810,7 +871,11 @@ function apply(ctx, config) {
 		async execute(args) {
 			const requested = args.limit ?? config.searchLimitDefault;
 			if (!Number.isInteger(requested) || requested < 1) throw new Error(`memory_search: \`limit\` must be an integer >= 1 (got ${requested})`);
-			return { matches: open().search(args.query, Math.min(requested, config.searchLimitMax)).map(({ id, text, tags, pinned }) => ({
+			// FORK-EDIT(2026-11-04 · 记忆时效)：先取原始命中，再做「过期稳定后移」（降权）+ 渲染时标注。
+			// 结果集不增不删（仍是最多 limit 条）、FTS / bm25 一字未改；无一条带 `until:` ⇒ 分区是空操作。
+			const raw = open().search(args.query, Math.min(requested, config.searchLimitMax));
+			const ann = annotateMatches(raw);
+			return { matches: ann.items.map(({ id, text, tags, pinned }) => ({
 				id,
 				text,
 				tags,

@@ -23,15 +23,22 @@
 「源码」= 官方 `lib/index.js` 逐字节 + 一段 `FORK NOTICE` 头注；构建不是编译，而是
 **语法校验 + 拷贝 + 指纹**（见 §3）。
 
-## 2. 与官方的差异（当前 = 只有头注）
+## 2. 与官方的差异
+
+> 注：本表是**当前全部差异**的清单（早期版本曾只有一段头注；现在多了下面几件 fork 自研件，
+> 头注与上游函数体仍然逐字节未改）。
 
 | 文件 | 差异 |
 |---|---|
-| `src/index.js` | 上游文件逐字节 + 顶部 19 行 `FORK NOTICE`。**函数体、工具定义、配置项一字未改**（`Compare-Object` 差异行 = 19，全部落在头注内） |
-| `src/index.d.ts` | 逐字节同上游 |
+| `src/index.js` | 上游函数体逐字节 + 顶部 `FORK NOTICE` 头注；自研改动全部带 `FORK-EDIT(<日期>)` 行注（表结构自检接线、来源血缘参数、时效标注渲染、`memory_get`） |
+| `src/index.d.ts` | 类型面：`write()` 增加可选 `sourceIds`、新增 `readSourceIds(id)`（其余同上游） |
 | `cordis.patch.yml` | **逐字节同上游** —— 其中 `insert.name` 必须保持 `dsh-memory`（见 §4） |
 | `package.json` | `name` → `dsh-memory-local`、`private: true`、**`dependencies` 置空**（零第三方依赖；`@deepseek-ai/schemastery` / `@deepseek-ai/dsh-tools` 由宿主主包的闭包在部署位置提供）、`scripts` 换成 build/test/deploy/verify |
 | `src/injector.mjs` | fork 自研（指针注入链；上游没有这个文件）。**2026-10-09**：`visibleInjections()` 取事件面改「**新面优先 + 老线回落**」—— 主包 0.1.5-rc.2 起 `Session.events` 已移除，只能用 `eventAt(seq)`；老线（≤0.1.4 的 `session.events`）回落保留，两面都没则安全返回 `{count:0}`。⚠️ 主包 0.1.6 会再弃用 `seq`/`eventAt`/`snapshotEvents` ⇒ 升级时此处须再复测。回滚：`node rollback-injector-fix.mjs --target <home> --allow-production`（默认 dry-run） |
+| `src/schema-migrate.mjs` | fork 自研（表结构自检：`owner_user` / `visibility` 两列 + 索引，失败只降级不阻断启动） |
+| `src/source-ids-migrate.mjs` | fork 自研（v0.3.0：来源血缘 `source_ids` 独立列 + `schema_meta` 显式迁移键 + fail-closed 写闸） |
+| `src/until-expiry.mjs` | fork 自研（v0.3.0：`until:YYYYMMDD` 解析 / 过期判定 / 稳定分区，纯函数零依赖） |
+| `src/recall.mjs` · `src/pointer.mjs` · `src/memory-read.mjs` · `src/vectors-read.mjs` · `src/recall-log.mjs` · `src/module-gate.mjs` · `src/bridge.mjs` · `src/user-message.mjs` · `src/host-adapter.js` | fork 自研（召回链 / 指针渲染 / 只读源 / 旁路留痕 / 模块门 / 编码桥 / 宿主适配层） |
 
 **零第三方依赖判据**：`package.json` 的 `dependencies` 为空对象；运行期只 import
 `@deepseek-ai/schemastery`、`@deepseek-ai/dsh-tools`（宿主主包自带）与 node 内置模块
@@ -41,8 +48,11 @@
 
 ```
 dsh-memory-local/
-├─ src/index.js            自持源码（官方基点 + FORK NOTICE）
+├─ src/index.js            自持源码（官方基点 + FORK NOTICE + 带日期的 FORK-EDIT 行注）
 ├─ src/index.d.ts
+├─ src/schema-migrate.mjs  表结构自检（owner_user / visibility / 索引；失败只降级）
+├─ src/source-ids-migrate.mjs  来源血缘 source_ids（v0.3.0；schema_meta 迁移键 + fail-closed）
+├─ src/until-expiry.mjs    记忆时效 until:YYYYMMDD（v0.3.0；解析 / 判定 / 稳定分区）
 ├─ lib/                    构建产物（deploy 只搬这一层 + cordis.patch.yml + package.json）
 ├─ cordis.patch.yml        bundle patch（逐字节同上游）
 ├─ FORK-BASE.json          fork 基点元数据（上游 sha / 行数 / 来源 / 口径说明）
@@ -51,6 +61,12 @@ dsh-memory-local/
 ├─ restore.mjs             原子还原上游原物（含 --self-test 沙箱演练 / --dry-run / --list）
 ├─ verify-after-restart.mjs 部署后自检（只读）
 └─ test/
+   ├─ schema-migrate.test.mjs  表结构自检单测（75 项）
+   ├─ until-expiry.test.mjs    v0.3.0 时效单测（21 项；含阴性对照）
+   ├─ source-ids.test.mjs      v0.3.0 血缘单测（14 项；含 fail-closed 与 FTS 隔离）
+   ├─ s2b.test.mjs             注入 / 召回 / 去重 / 降级四类单测（node --test）
+   ├─ visible-injections.test.mjs 取事件面兼容性单测（node --test）
+   ├─ test-adapter-converge.mjs   适配层收敛点用例（node --test）
    ├─ probe-entity.mjs     部署位置加载探针：三工具 + memory:recall 段 + 真跑 write/search/forget
    └─ regression.mjs       上游 vs fork「同输入同输出」逐步骤对照（行为一致判据）
 ```
