@@ -222,14 +222,26 @@ test('UPSERT 幂等：同 path 覆盖不新增行；text_hash 相同则整条不
 
 test('默认值与多人口径：owner_user / visibility 落库可核对', () => {
   const s = makeSandbox();
+  const prevOwnerEnv = process.env.DSH_OWNER_USER;
   try {
     const store = openDocIndexStore(s.dbPath);
+    // ① 配了 $DSH_OWNER_USER ⇒ 缺省 owner_user 取该值（不再内置任何真实 userid）
+    process.env.DSH_OWNER_USER = 'owner_x';
     upsertDocs(store.db, [{ path: 'docs/a.md', mtime: 1, size: 1, textHash: 'h', summary: 'S', updatedAt: 1 }]);
     const row = getRow(store.db, 'docs/a.md');
-    assertEq(row.owner_user, 'LiJianXiao', 'owner_user 默认');
+    assertEq(row.owner_user, 'owner_x', 'owner_user 默认取 $DSH_OWNER_USER');
     assertEq(row.visibility, 'private_owner', 'visibility 默认');
+
+    // ② 未配 ⇒ 空串（不抛错、不编造人名；表级 DEFAULT 也是空串）
+    delete process.env.DSH_OWNER_USER;
+    upsertDocs(store.db, [{ path: 'docs/b.md', mtime: 1, size: 1, textHash: 'h', summary: 'S', updatedAt: 1 }]);
+    const rowB = getRow(store.db, 'docs/b.md');
+    assertEq(rowB.owner_user, '', '未配 $DSH_OWNER_USER ⇒ owner_user 留空');
+    assertEq(rowB.visibility, 'private_owner', 'visibility 默认（未配 owner 时同样成立）');
     store.db.close();
   } finally {
+    if (prevOwnerEnv === undefined) delete process.env.DSH_OWNER_USER;
+    else process.env.DSH_OWNER_USER = prevOwnerEnv;
     s.cleanup();
   }
 });

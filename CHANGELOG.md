@@ -3,6 +3,37 @@
 本仓的版本按**语义化版本**：改结论/改契约升主版本，加能力升次版本，修错别字与文档订正不升。
 英文摘要见每节末尾的 *English* 行。
 
+## 未发布（建议 v0.2.1）— 2026-11-04
+
+**把真实账号从代码里移除**（安全修复）。⚠️ 如实说明：**v0.2.0 及更早的包仍带着它**（已发布在 npm，
+可被下载），本版清除。
+
+- `memory-db-tools/lib/memory-scope.mjs` 与 `dsh-memory-local/src/schema-migrate.mjs` 里的
+  `FALLBACK_OWNER_USER` 不再写死任何 userid；改为读环境变量 **`$DSH_OWNER_USER`**（缺省空串）。
+  新增函数 `fallbackOwnerUser(env)`；`FALLBACK_OWNER_USER` 保留为"进程启动瞬间的快照"导出
+  （运行时判定请用函数，快照不跟随进程内 env 变化）。
+- `memory-engine/lib/doc-index-store.mjs` 的建表默认值改为空串（SQLite 的 `DEFAULT` 只能是常量表达式），
+  写入时由 `fallbackOwnerUser()` 补值；`memory-engine/lib/doc-index.mjs` 与
+  `memory-engine/cli/domain-tags.mjs` 同样不再回落到内置 userid。
+- **行为变化（唯一一条）**：身份表缺位**且**未配 `$DSH_OWNER_USER` 时，`owner_user` 落**空串**、
+  `notes` 记一行"未配置 owner"，**不抛错**（抛错会让既有用户的迁移直接失败）。
+  有身份表的主路径**完全不变**（仍取 `role === 'owner'` 那条，`source === 'identity-table'`）。
+- 测试与夹具里的真实账号换成中性夹具名（`owner_x` / `Owner_X`），**断言语义不变**；另新增
+  「未配 env ⇒ 留空 + 提示」与「配了 env ⇒ 取该值」两态断言（并做过证红演练：把实现临时改回
+  "写死常量"，两处测试确实变红）。
+- 测试夹具不再去读本机的真实身份表（`~/.dsh/secretary-users.json`）：需要身份表的用例一律显式传
+  临时夹具表，否则会把本机 owner 写进夹具库。
+- 顺带把 `dsh-memory-local/src/index.js` 注释里的设备别名与内部文档名改成中性说法（**仅注释**，行为不变）。
+
+*English*: the real account name is gone from the code. `FALLBACK_OWNER_USER` is no longer a typed-in
+userid — it is now `fallbackOwnerUser(env)`, read from `$DSH_OWNER_USER` (empty by default). With neither
+an identity table nor that env var, `owner_user` stays empty and a note is emitted; nothing throws. The
+identity-table path is unchanged (still `source === 'identity-table'`). Tests gained both states and a
+red-drill proves they are not vacuous.
+
+**测试**：`npm test` = scope 72 通过 / 0 失败（1 条跳过：`memory-fieldname-check.mjs` 从未随本仓发布，
+已在测试里登记为缺口）+ schema-migrate 75 + engine 245。
+
 ## v0.2.0 — 2026-10-31
 
 **41 个业务件独立重写**（能力与对外接口不变，实现换成自己的）：

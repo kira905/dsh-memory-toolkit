@@ -17,7 +17,7 @@ import {
 } from './doc-scan.mjs';
 import { emptyCost, resolveApiKey, rolloverCost, summarizeAll } from './doc-summarize.mjs';
 import {
-  META_KEYS, deleteStaleRows, hasDocRows, listRows,
+  META_KEYS, deleteStaleRows, fallbackOwnerUser, hasDocRows, listRows,
   openDocIndexStore, setMeta, upsertDocs, withBusyRetry,
 } from './doc-index-store.mjs';
 
@@ -397,7 +397,7 @@ export async function runDocIndexOnce({
           size: entry.doc.size,
           textHash: digest.textHash,
           summary: digest.summary,
-          ownerUser: flags['owner-user'] || 'LiJianXiao',
+          ownerUser: flags['owner-user'] || fallbackOwnerUser(),
           visibility: flags.visibility || 'private_owner',
           // 索引条描述的是**这篇文档的 mtime**，不是写入时刻
           updatedAt: entry.doc.mtime,

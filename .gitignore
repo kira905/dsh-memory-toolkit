@@ -13,3 +13,5 @@ _tmp/
 !.env.example
 coverage/
 *.tmp
+# 构建指纹（含 builtAt 时间戳 ⇒ 每次 build 都变，不入仓；由 build.mjs 本地生成）
+dsh-memory-local/lib/.build-info.json

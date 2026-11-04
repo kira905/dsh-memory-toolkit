@@ -5,7 +5,7 @@
  *   01 未加列 ⇒ 自检报"已加列"（两列 + 索引）
  *   02 幂等：连跑两次，第二次 0 语句、0 日志追加
  *   03 列定义落库正确（type / notnull / dflt_value）
- *   04 默认值语义：新插入行 owner_user = 身份表 owner；无身份表 ⇒ 回落常量；visibility = private_owner
+ *   04 默认值语义：新插入行 owner_user = 身份表 owner；无身份表 ⇒ 取 $DSH_OWNER_USER；两者都缺 ⇒ 留空；visibility = private_owner
  *   05 加列后 `SELECT *` 可用（官方版兼容的库侧前提）
  *   06 失败降级：只读连接 ⇒ ok=false / degraded=true / **不抛** + 日志落一行
  *   07 失败降级：坏库（把表 drop 掉再自检）不抛且降级
@@ -35,6 +35,10 @@ const section = (t) => process.stdout.write(`\n[${t}]\n`);
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 's3b-schema-'));
 let caseNo = 0;
+
+// 本测试对「未配 owner」这一态下断言 ⇒ 显式清掉继承来的 env（各用例按需要显式注入 env）
+const ENV_OWNER_BEFORE = process.env.DSH_OWNER_USER;
+delete process.env.DSH_OWNER_USER;
 
 /** 造一个「6 列 + 若干行」的库（= 加列前的生产形态），返回 { dir, home, dbPath }。 */
 function makeLegacyDb({ rows = 2, usersJson = undefined, dropTable = false } = {}) {
@@ -126,21 +130,32 @@ section('03 列定义落库正确');
 }
 
 // ────────────────────────────────────────────── 04 默认值语义
-section('04 默认值语义（身份表优先 / 回落常量）');
+section('04 默认值语义（身份表优先 / $DSH_OWNER_USER 兜底 / 都缺则留空）');
 {
-  // 04a 无身份表 ⇒ 回落常量
+  // 04a 无身份表 + 未配 $DSH_OWNER_USER ⇒ owner 留空（不抛错、不编造人名）
   const a = makeLegacyDb({});
   const dba = new DatabaseSync(a.dbPath);
-  const ra = S.ensureMemoryColumns(dba, { dbPath: a.dbPath });
-  eq(ra.ownerSource, 'fallback', '无身份表 ⇒ ownerSource=fallback');
-  eq(ra.ownerUser, S.FALLBACK_OWNER_USER, `回落常量 ${S.FALLBACK_OWNER_USER}`);
+  const ra = S.ensureMemoryColumns(dba, { dbPath: a.dbPath, env: {} });
+  eq(ra.ownerSource, 'unset', '无身份表 + 未配 env ⇒ ownerSource=unset');
+  eq(ra.ownerUser, '', '未配 env ⇒ ownerUser 留空');
+  ok(ra.notes.some((n) => n.includes('$DSH_OWNER_USER')), 'notes 点名 $DSH_OWNER_USER（不是静默留空）');
   dba.prepare("INSERT INTO memories (text, tags, pinned, created_at, updated_at) VALUES ('n1','',0,1,1)").run();
   const rowA = dba.prepare("SELECT owner_user, visibility FROM memories WHERE text='n1'").get();
-  eq(rowA.owner_user, S.FALLBACK_OWNER_USER, '新行 owner_user = 回落常量');
+  eq(rowA.owner_user, '', '新行 owner_user 为空串（未配置就是不写）');
   eq(rowA.visibility, 'private_owner', '新行 visibility = private_owner');
-  const allA = dba.prepare('SELECT COUNT(*) n FROM memories WHERE owner_user=? AND visibility=?').get(S.FALLBACK_OWNER_USER, 'private_owner');
+  const allA = dba.prepare('SELECT COUNT(*) n FROM memories WHERE owner_user=? AND visibility=?').get('', 'private_owner');
   eq(allA.n, 3, '存量 2 行 + 新 1 行全部拿到默认值（无 NULL）');
   dba.close();
+
+  // 04a-2 无身份表 + 配了 $DSH_OWNER_USER ⇒ 取 env（这才是"回落"这一层的唯一来源）
+  const a2 = makeLegacyDb({});
+  const dba2 = new DatabaseSync(a2.dbPath);
+  const ra2 = S.ensureMemoryColumns(dba2, { dbPath: a2.dbPath, env: { DSH_OWNER_USER: 'owner_x' } });
+  eq(ra2.ownerSource, 'fallback', '配了 env ⇒ ownerSource=fallback');
+  eq(ra2.ownerUser, 'owner_x', 'ownerUser 取 $DSH_OWNER_USER');
+  dba2.prepare("INSERT INTO memories (text, tags, pinned, created_at, updated_at) VALUES ('n2','',0,1,1)").run();
+  eq(dba2.prepare("SELECT owner_user FROM memories WHERE text='n2'").get().owner_user, 'owner_x', '新行落的就是 env 值');
+  dba2.close();
 
   // 04b 身份表存在（**权威 map 形态**，家人档 §3.3）⇒ 取 role==='owner' 的那个键
   const b = makeLegacyDb({ usersJson: JSON.stringify({ _comment: '注释键应跳过', Wife_01: { role: 'family', name: '家人' }, Owner_X: { role: 'owner', name: '主人' } }) });
@@ -159,19 +174,19 @@ section('04 默认值语义（身份表优先 / 回落常量）');
   eq(S.ensureMemoryColumns(dbb2, { dbPath: b2.dbPath }).ownerUser, 'U_owner', '`{users:[…]}` 形态也认（宽容扩展）');
   dbb2.close();
 
-  // 04c 身份表是数组形态 + 没有 owner 条目 ⇒ 回落
+  // 04c 身份表是数组形态 + 没有 owner 条目 ⇒ 走回落（本轮未配 env ⇒ unset）
   const c = makeLegacyDb({ usersJson: JSON.stringify([{ userid: 'A', role: 'family' }]) });
   const dbc = new DatabaseSync(c.dbPath);
-  const rc = S.ensureMemoryColumns(dbc, { dbPath: c.dbPath });
-  eq(rc.ownerSource, 'fallback', '身份表无 owner 条目 ⇒ 回落');
+  const rc = S.ensureMemoryColumns(dbc, { dbPath: c.dbPath, env: {} });
+  eq(rc.ownerSource, 'unset', '身份表无 owner 条目 + 未配 env ⇒ unset');
   ok(rc.notes.some((n) => /没有任何 role==='owner'/.test(n)), 'notes 说明原因');
   dbc.close();
 
-  // 04d 身份表坏 JSON ⇒ 回落（不抛）
+  // 04d 身份表坏 JSON ⇒ 走回落（不抛）
   const d = makeLegacyDb({ usersJson: '{ this is not json' });
   const dbd = new DatabaseSync(d.dbPath);
-  const rd = S.ensureMemoryColumns(dbd, { dbPath: d.dbPath });
-  ok(rd.ok === true && rd.ownerSource === 'fallback', '坏身份表 ⇒ 仍迁移成功 + 回落');
+  const rd = S.ensureMemoryColumns(dbd, { dbPath: d.dbPath, env: {} });
+  ok(rd.ok === true && rd.ownerSource === 'unset', '坏身份表 ⇒ 仍迁移成功 + 走回落');
   dbd.close();
 }
 
@@ -297,9 +312,20 @@ section('10 与权威源 memory-scope.mjs 逐字对照（⑤-3 卡）');
       S.buildAddColumnSql(S.NEW_COLUMNS[1], S.DEFAULT_VISIBILITY),
       'buildAddColumnSql(visibility) 输出一致',
     );
-    // 回落行为一致（无身份表时）
-    eq(A.resolveDefaultOwner(null).ownerUser, S.resolveDefaultOwner(null).ownerUser, '回落 ownerUser 一致');
-    eq(A.resolveDefaultOwner(null).source, S.resolveDefaultOwner(null).source, '回落 source 标记一致');
+    // 回落层一致（两态都要一致：未配 env ⇒ 空；配了 env ⇒ 取该值）
+    eq(A.fallbackOwnerUser({}), S.fallbackOwnerUser({}), 'fallbackOwnerUser(未配 env) 一致');
+    eq(
+      A.fallbackOwnerUser({ DSH_OWNER_USER: ' owner_x ' }),
+      S.fallbackOwnerUser({ DSH_OWNER_USER: ' owner_x ' }),
+      'fallbackOwnerUser(配了 env，含空白) 一致',
+    );
+    eq(A.resolveDefaultOwner(null, {}).ownerUser, S.resolveDefaultOwner(null, {}).ownerUser, '回落 ownerUser 一致');
+    eq(A.resolveDefaultOwner(null, {}).source, S.resolveDefaultOwner(null, {}).source, '回落 source 标记一致');
+    eq(
+      A.resolveDefaultOwner(null, { DSH_OWNER_USER: 'owner_x' }).ownerUser,
+      S.resolveDefaultOwner(null, { DSH_OWNER_USER: 'owner_x' }).ownerUser,
+      'env 兜底 ownerUser 一致',
+    );
     // 同一份身份表文本（权威 map 形态）→ 同一份 owner + 同一份 userid 集合
     const mapText = JSON.stringify({ _note: '注释键', Z_1: { role: 'family' }, Z_owner: { role: 'owner', name: '主人' } });
     eq(A.parseIdentityTable(mapText).owner, S.parseIdentityTable(mapText).owner, 'map 形态：owner 解析一致');
@@ -332,3 +358,6 @@ if (failures.length === 0) {
 }
 // 收尾清理（测试目录在 %TEMP%）
 try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* 忽略 */ }
+// 还原被本测试改过的 env
+if (ENV_OWNER_BEFORE === undefined) delete process.env.DSH_OWNER_USER;
+else process.env.DSH_OWNER_USER = ENV_OWNER_BEFORE;

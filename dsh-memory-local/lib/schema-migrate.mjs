@@ -30,11 +30,27 @@ export const VISIBILITY_VALUES = Object.freeze(["private_owner", "family", "publ
 export const DEFAULT_VISIBILITY = "private_owner";
 
 /**
- * `owner_user` 缺省**回落**常量。
- * ⚠️ 它不是硬编码人名，而是"本机 owner 的 userid"的兜底值：正常取值来自身份表里
- * `role === 'owner'` 的那条；取不到才回落这里，并在自检日志里**报一行**（§3.3-3）。
+ * `owner_user` 缺省**回落值**的来源：环境变量 `$DSH_OWNER_USER`（缺省空串）。
+ *
+ * ⚠️ 它不是权威取值，而是"身份表缺位时的人工兜底"：正常取值来自身份表里 `role === 'owner'`
+ * 的那条；取不到才落到这里，并在自检日志里**报一行**（§3.3-3）。
+ *
+ * 为什么从 env 读、不写死人名（2026-11-04）：本包公开发布，代码里的字面量会连同作者账号一起发出去。
+ * 兜底值属于部署环境的事实 ⇒ 只能由环境提供；空串 = "本机没配 owner"（留空 + 报一行，不抛错）。
+ *
+ * @param {Record<string,string|undefined>} [env] - 默认 process.env（测试可注入）
+ * @returns {string}
  */
-export const FALLBACK_OWNER_USER = "LiJianXiao";
+export function fallbackOwnerUser(env = process.env) {
+	const raw = env?.DSH_OWNER_USER;
+	return typeof raw === "string" ? raw.trim() : "";
+}
+
+/**
+ * 兼容导出：模块加载瞬间的 `$DSH_OWNER_USER` 快照（运行时判定请用 `fallbackOwnerUser()`）。
+ * ⚠️ 必须与权威源 memory-db-tools/lib/memory-scope.mjs 的同名导出保持一致（逐字对照测试守）。
+ */
+export const FALLBACK_OWNER_USER = fallbackOwnerUser();
 
 /** 身份表文件名（家人档 §3.3：`.dsh/secretary-users.json`，不进任何仓）。 */
 export const IDENTITY_TABLE_NAME = "secretary-users.json";
@@ -172,20 +188,26 @@ export function readIdentityTable(home) {
 
 /**
  * 解析 `owner_user` 的默认值（§3.3-3 的取值优先级）：
- *   ① 身份表里 `role === 'owner'` 的那条 ② 缺省回落常量 + 一行说明。
- * @param {{ok:boolean,exists?:boolean,owner?:string|null,error?:string|null,path?:string}} identity
- * @returns {{ownerUser:string,source:'identity-table'|'fallback',notes:string[]}}
+ *   ① 身份表里 `role === 'owner'` 的那条 ② `$DSH_OWNER_USER` + 一行说明 ③ 都没有 ⇒ 空串 + 提示未配置。
+ * @param {{ok:boolean,exists?:boolean,owner?:string|null,error?:string|null,path?:string}|null} identity
+ * @param {Record<string,string|undefined>} [env] - 默认 process.env（测试可注入）
+ * @returns {{ownerUser:string,source:'identity-table'|'fallback'|'unset',notes:string[]}}
  */
-export function resolveDefaultOwner(identity) {
+export function resolveDefaultOwner(identity, env = process.env) {
 	const notes = [];
 	if (identity && identity.ok && identity.owner) return { ownerUser: identity.owner, source: "identity-table", notes };
 	if (identity && identity.exists && identity.ok && !identity.owner) {
-		notes.push(`身份表 ${identity.path} 存在但没有任何 role==='owner' 的条目 → 回落常量`);
+		notes.push(`身份表 ${identity.path} 存在但没有任何 role==='owner' 的条目 → 走回落`);
 	} else if (identity && identity.error) {
-		notes.push(`身份表不可用（${identity.error}） → 回落常量`);
+		notes.push(`身份表不可用（${identity.error}） → 走回落`);
 	}
-	notes.push(`owner_user 默认值回落常量 '${FALLBACK_OWNER_USER}'（身份表缺位时的人工兜底，非硬编码设计）`);
-	return { ownerUser: FALLBACK_OWNER_USER, source: "fallback", notes };
+	const fallback = fallbackOwnerUser(env);
+	if (!fallback) {
+		notes.push("未配置 owner（环境变量 $DSH_OWNER_USER 为空）⇒ owner_user 留空（不再回落到任何内置 userid）");
+		return { ownerUser: "", source: "unset", notes };
+	}
+	notes.push(`owner_user 默认值取 $DSH_OWNER_USER='${fallback}'（身份表缺位时的人工兜底，非硬编码）`);
+	return { ownerUser: fallback, source: "fallback", notes };
 }
 
 /** 读某表列名（PRAGMA table_info；表不存在/失败返回 []）。 */
@@ -222,8 +244,8 @@ export function buildAddColumnSql(col, defaultLiteral, table = "memories") {
  * 迁移计划（**只读**，不改库）：算缺哪些列、要跑哪些语句、默认值取什么。
  * @returns {{columns:string[],missing:string[],present:string[],indexExists:boolean,statements:string[],defaultOwner:object,notes:string[]}}
  */
-export function migrationPlan(db, { identity = null, table = "memories" } = {}) {
-	const resolved = resolveDefaultOwner(identity);
+export function migrationPlan(db, { identity = null, table = "memories", env = process.env } = {}) {
+	const resolved = resolveDefaultOwner(identity, env);
 	const columns = columnsOf(db, table);
 	const missing = NEW_COLUMNS.filter((c) => !columns.includes(c.name));
 	const present = NEW_COLUMNS.filter((c) => columns.includes(c.name)).map((c) => c.name);
@@ -270,6 +292,8 @@ export function applyMigration(db, plan) {
  * @returns {{ok:boolean,degraded:boolean,added:string[],present:string[],indexCreated:boolean,statements:string[],ownerUser:string,ownerSource:string,notes:string[],error:string|null,skipped:string|null}}
  */
 export function ensureMemoryColumns(db, opts = {}) {
+	const env = opts.env ?? process.env;
+	const fallback = fallbackOwnerUser(env);
 	const result = {
 		ok: false,
 		degraded: false,
@@ -277,8 +301,8 @@ export function ensureMemoryColumns(db, opts = {}) {
 		present: [],
 		indexCreated: false,
 		statements: [],
-		ownerUser: FALLBACK_OWNER_USER,
-		ownerSource: "fallback",
+		ownerUser: fallback,
+		ownerSource: fallback ? "fallback" : "unset",
 		notes: [],
 		error: null,
 		skipped: null
@@ -294,12 +318,12 @@ export function ensureMemoryColumns(db, opts = {}) {
 		// ② 身份表 → owner_user 默认值
 		const home = opts.home ?? deriveHome(opts.dbPath);
 		const identity = readIdentityTable(home);
-		const resolved = resolveDefaultOwner(identity);
+		const resolved = resolveDefaultOwner(identity, env);
 		result.ownerUser = resolved.ownerUser;
 		result.ownerSource = resolved.source;
 		result.notes = resolved.notes;
 		// ③ 只读规划
-		const plan = migrationPlan(db, { identity });
+		const plan = migrationPlan(db, { identity, env });
 		result.present = plan.present;
 		result.statements = plan.statements;
 		// ④ 无变更 ⇒ 幂等返回（不写日志）

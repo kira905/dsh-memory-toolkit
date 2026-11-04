@@ -18,7 +18,7 @@ import { openVectorsStore, upsertVectors } from '../lib/vectors-store.mjs';
 export const __section = 'S3c · 夜间提炼（内容级去重 / 不自我指涉 / 成本闸 / 台账 / 回滚 / D2 从严）';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 's3c-distill-'));
-const OWNER = 'LiJianXiao';
+const OWNER = 'owner_x';
 const DIM = 8;
 const NOW = Date.parse('2026-09-21T04:10:00+08:00');
 
@@ -31,7 +31,7 @@ function makeDb(name, rows, { withOwner = true } = {}) {
   db.exec(`CREATE TABLE memories (
     id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '',
     pinned INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-    ${withOwner ? ", owner_user TEXT NOT NULL DEFAULT 'LiJianXiao', visibility TEXT NOT NULL DEFAULT 'private_owner'" : ''}
+    ${withOwner ? ", owner_user TEXT NOT NULL DEFAULT 'owner_x', visibility TEXT NOT NULL DEFAULT 'private_owner'" : ''}
   )`);
   const sql = withOwner
     ? 'INSERT INTO memories (id, text, tags, pinned, created_at, updated_at, owner_user, visibility) VALUES (?,?,?,?,?,?,?,?)'

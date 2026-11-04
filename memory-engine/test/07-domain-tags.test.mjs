@@ -19,7 +19,7 @@ function makeDb(name, rows, { withOwner = true } = {}) {
   db.exec(`CREATE TABLE memories (
     id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '',
     pinned INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-    ${withOwner ? ", owner_user TEXT NOT NULL DEFAULT 'LiJianXiao', visibility TEXT NOT NULL DEFAULT 'private_owner'" : ''}
+    ${withOwner ? ", owner_user TEXT NOT NULL DEFAULT 'owner_x', visibility TEXT NOT NULL DEFAULT 'private_owner'" : ''}
   )`);
   const sql = withOwner
     ? 'INSERT INTO memories (id, text, tags, pinned, created_at, updated_at, owner_user, visibility) VALUES (?,?,?,?,?,?,?,?)'
@@ -27,7 +27,7 @@ function makeDb(name, rows, { withOwner = true } = {}) {
   const ins = db.prepare(sql);
   for (const r of rows) {
     const base = [r.id, r.text, r.tags ?? '', r.pinned ?? 0, r.created_at ?? 1700000000000, r.updated_at ?? 1700000000000];
-    if (withOwner) ins.run(...base, r.owner ?? 'LiJianXiao', r.visibility ?? 'private_owner');
+    if (withOwner) ins.run(...base, r.owner ?? 'owner_x', r.visibility ?? 'private_owner');
     else ins.run(...base);
   }
   db.close();

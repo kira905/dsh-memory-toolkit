@@ -24,7 +24,7 @@ const DDL = [
   '  size INTEGER NOT NULL,',
   '  text_hash TEXT NOT NULL,',
   '  summary TEXT NOT NULL,',
-  "  owner_user TEXT NOT NULL DEFAULT 'LiJianXiao',",
+  "  owner_user TEXT NOT NULL DEFAULT '',",
   "  visibility TEXT NOT NULL DEFAULT 'private_owner',",
   '  updated_at INTEGER NOT NULL',
   ');',
@@ -41,7 +41,7 @@ const COLUMN_SPEC = [
   ['size', 'INTEGER', 1, null, 0],
   ['text_hash', 'TEXT', 1, null, 0],
   ['summary', 'TEXT', 1, null, 0],
-  ['owner_user', 'TEXT', 1, "'LiJianXiao'", 0],
+  ['owner_user', 'TEXT', 1, "''", 0],
   ['visibility', 'TEXT', 1, "'private_owner'", 0],
   ['updated_at', 'INTEGER', 1, null, 0],
 ];
@@ -64,7 +64,14 @@ export const RETRY = {
   totalBudgetMs: 60000,
 };
 
-const DEFAULT_OWNER = 'LiJianXiao';
+// owner_user 的缺省回落值：由部署环境提供（缺省空串），不写死任何 userid —— 本包公开发布，
+// 代码里的字面量等于把作者账号一起发出去。DDL 的 DEFAULT 只能是常量表达式 ⇒ 表级默认留空，
+// 真正的值在写入时由调用方（CLI --owner-user / $DSH_OWNER_USER）给出。
+export function fallbackOwnerUser(env = process.env) {
+  const raw = env?.DSH_OWNER_USER;
+  return typeof raw === 'string' ? raw.trim() : '';
+}
+
 const DEFAULT_VISIBILITY = 'private_owner';
 
 // 长 SQL 集中在这里，读代码时不用在一堆模板串里找
@@ -227,7 +234,7 @@ export function upsertDocs(db, rows) {
         asInt(row.size),
         String(row.textHash),
         String(row.summary),
-        String(row.ownerUser || DEFAULT_OWNER),
+        String(row.ownerUser || fallbackOwnerUser()),
         String(row.visibility || DEFAULT_VISIBILITY),
         asInt(row.updatedAt) || stamp,
       );

@@ -45,7 +45,7 @@ const log = (...a) => {
 
 /** 夹具身份表（wife_test / husband_test 已登记；stranger_unregistered **故意不登记**）。 */
 const FIXTURE_IDENTITY = Object.freeze({
-  LiJianXiao: { name: "主人", role: "owner", caps: ["*"] },
+  owner_x: { name: "主人", role: "owner", caps: ["*"] },
   wife_test: { name: "家人A（夹具）", role: "member", caps: [] },
   husband_test: { name: "家人B（夹具）", role: "member", caps: [] },
 });
@@ -54,9 +54,9 @@ const FIXTURE_IDENTITY = Object.freeze({
 const REGISTERED = Object.freeze(Object.keys(FIXTURE_IDENTITY));
 
 const CASES = Object.freeze([
-  { key: "owner_private", owner: "LiJianXiao", visibility: "private_owner", expectFamily: false, expectOwner: true, why: "主人私有条（对家人侧超域）" },
-  { key: "owner_family", owner: "LiJianXiao", visibility: "family", expectFamily: true, expectOwner: true, why: "主人显式共享条" },
-  { key: "owner_public", owner: "LiJianXiao", visibility: "public", expectFamily: true, expectOwner: true, why: "公开条" },
+  { key: "owner_private", owner: "owner_x", visibility: "private_owner", expectFamily: false, expectOwner: true, why: "主人私有条（对家人侧超域）" },
+  { key: "owner_family", owner: "owner_x", visibility: "family", expectFamily: true, expectOwner: true, why: "主人显式共享条" },
+  { key: "owner_public", owner: "owner_x", visibility: "public", expectFamily: true, expectOwner: true, why: "公开条" },
   { key: "wife_private", owner: "wife_test", visibility: "private_owner", expectFamily: true, expectOwner: false, why: "家人A自己的私有条（本人可见）" },
   { key: "husband_private", owner: "husband_test", visibility: "private_owner", expectFamily: false, expectOwner: false, why: "家人B私有条（对家人A超域）" },
   { key: "stranger_family", owner: "stranger_unregistered", visibility: "family", expectFamily: false, expectOwner: false, why: "**超域条**：owner 未登记却标了 family" },
@@ -118,7 +118,7 @@ function main() {
     const famStrictKeys = keysOf(fx(strict), ids);
 
     // ---- 主人侧注入层
-    const ownerScope = ownerScopeSql("LiJianXiao");
+    const ownerScope = ownerScopeSql("owner_x");
     const ownerKeys = keysOf(fx(ownerScope), ids);
 
     // ---- 身份表不可用 ⇒ fail-closed（只留本人条）

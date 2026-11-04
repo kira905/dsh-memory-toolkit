@@ -59,6 +59,8 @@
   "scripts": {
     "help": "node memory-db-tools/audit-export.mjs --help",
     "audit": "node persona-memory-audit.mjs",
+    "test": "node memory-db-tools/_test/test-memory-scope.mjs && node dsh-memory-local/test/schema-migrate.test.mjs && node memory-engine/test/run.mjs",
+    "test:scope": "node memory-db-tools/_test/test-memory-scope.mjs",
     "test:engine": "node memory-engine/test/run.mjs",
     "test:plugin": "node dsh-memory-local/test/regression.mjs"
   }

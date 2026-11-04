@@ -48,6 +48,7 @@ const CLI = {
 
 let pass = 0;
 const fails = [];
+const skips = [];
 function ok(name, cond, detail = "") {
   if (cond) {
     pass += 1;
@@ -56,12 +57,21 @@ function ok(name, cond, detail = "") {
     console.log(`  ✗ ${name}${detail ? ` —— ${detail}` : ""}`);
   }
 }
+/** 环境缺件 ⇒ 记 skip（**不计通过**，结算时单列），别写成恒真断言。 */
+function skip(name, reason = "") {
+  skips.push(`${name}${reason ? ` —— ${reason}` : ""}`);
+  console.log(`  ⊘ ${name}${reason ? ` —— ${reason}` : ""}`);
+}
 function eq(name, a, b) {
   ok(name, Object.is(a, b) || JSON.stringify(a) === JSON.stringify(b), `实得 ${JSON.stringify(a)} · 期望 ${JSON.stringify(b)}`);
 }
 function section(t) {
   console.log(`\n== ${t} ==`);
 }
+
+// 本测试要对「未配 owner」这一态下断言 ⇒ 显式清掉继承来的 env（收尾还原）
+const ENV_OWNER_BEFORE = process.env.DSH_OWNER_USER;
+delete process.env.DSH_OWNER_USER;
 
 const PROD = productionDbPath();
 const prodShaBefore = fs.existsSync(PROD) ? sha256File(PROD) : null;
@@ -94,10 +104,10 @@ const runCli = (script, args, env = {}) =>
 section("① 纯函数（身份表解析 / 默认值解析 / DDL / 过滤 SQL）");
 
 {
-  const good = parseIdentityTable(JSON.stringify({ _comment: "注释", LiJianXiao: { role: "owner" }, wife_x: { role: "member" } }));
+  const good = parseIdentityTable(JSON.stringify({ _comment: "注释", owner_x: { role: "owner" }, wife_x: { role: "member" } }));
   ok("身份表：正常解析", good.ok, good.error || "");
-  eq("身份表：跳过 _ 前缀注释键", good.userids, ["LiJianXiao", "wife_x"]);
-  eq("身份表：取 role=owner", good.owner, "LiJianXiao");
+  eq("身份表：跳过 _ 前缀注释键", good.userids, ["owner_x", "wife_x"]);
+  eq("身份表：取 role=owner", good.owner, "owner_x");
 
   const bad = parseIdentityTable("{不是 JSON}");
   ok("身份表：坏 JSON ⇒ ok=false（不抛）", bad.ok === false && bad.userids.length === 0);
@@ -105,21 +115,27 @@ section("① 纯函数（身份表解析 / 默认值解析 / DDL / 过滤 SQL）
   const arr = parseIdentityTable("[1,2]");
   ok("身份表：数组根 ⇒ ok=false", arr.ok === false);
 
-  const noOwner = resolveDefaultOwner({ ok: true, exists: true, owner: null, userids: ["a"], path: "x" });
-  ok("默认值：无 owner 条目 ⇒ 回落常量 + 有说明行", noOwner.source === "fallback" && noOwner.notes.length > 0);
-  const withOwner = resolveDefaultOwner({ ok: true, exists: true, owner: "LiJianXiao", userids: ["LiJianXiao"], path: "x" });
-  ok("默认值：有 owner 条目 ⇒ 取身份表（非硬编码）", withOwner.ownerUser === "LiJianXiao" && withOwner.source === "identity-table");
-  const broken = resolveDefaultOwner({ ok: false, exists: true, error: "坏了", userids: [], owner: null, path: "x" });
-  ok("默认值：身份表坏 ⇒ 回落 + 报警", broken.source === "fallback" && broken.notes.some((n) => n.includes("不可用")));
+  const noOwner = resolveDefaultOwner({ ok: true, exists: true, owner: null, userids: ["a"], path: "x" }, {});
+  ok(
+    "默认值：无 owner 条目 + 未配 $DSH_OWNER_USER ⇒ 留空 + 说明行",
+    noOwner.source === "unset" && noOwner.ownerUser === "" && noOwner.notes.some((n) => n.includes("$DSH_OWNER_USER")),
+    JSON.stringify(noOwner),
+  );
+  const noOwnerEnv = resolveDefaultOwner({ ok: true, exists: true, owner: null, userids: ["a"], path: "x" }, { DSH_OWNER_USER: "owner_x" });
+  ok("默认值：无 owner 条目 + 配了 $DSH_OWNER_USER ⇒ 取 env（不再回落内置人名）", noOwnerEnv.ownerUser === "owner_x" && noOwnerEnv.source === "fallback");
+  const withOwner = resolveDefaultOwner({ ok: true, exists: true, owner: "owner_x", userids: ["owner_x"], path: "x" });
+  ok("默认值：有 owner 条目 ⇒ 取身份表（非硬编码）", withOwner.ownerUser === "owner_x" && withOwner.source === "identity-table");
+  const broken = resolveDefaultOwner({ ok: false, exists: true, error: "坏了", userids: [], owner: null, path: "x" }, {});
+  ok("默认值：身份表坏 ⇒ 走回落 + 报警", broken.source === "unset" && broken.notes.some((n) => n.includes("不可用")));
 
-  eq("DDL：owner_user", buildAddColumnSql(NEW_COLUMNS[0], "LiJianXiao"), "ALTER TABLE memories ADD COLUMN owner_user TEXT NOT NULL DEFAULT 'LiJianXiao'");
+  eq("DDL：owner_user", buildAddColumnSql(NEW_COLUMNS[0], "owner_x"), "ALTER TABLE memories ADD COLUMN owner_user TEXT NOT NULL DEFAULT 'owner_x'");
   eq("DDL：visibility", buildAddColumnSql(NEW_COLUMNS[1], DEFAULT_VISIBILITY), "ALTER TABLE memories ADD COLUMN visibility TEXT NOT NULL DEFAULT 'private_owner'");
   eq("字面量转义：单引号翻倍", quoteLiteral("O'Brien"), "'O''Brien'");
   eq("visibility 取值域", [...VISIBILITY_VALUES], ["private_owner", "family", "public"]);
 
   const fBase = familyScopeSql("wife_x");
   ok("家人侧基础句 = §3.3-4 原文", fBase.mode === "base" && fBase.where === "(visibility IN ('family','public') OR owner_user = ?)" && fBase.params[0] === "wife_x");
-  const fStrict = familyScopeSql("wife_x", { registeredOwners: ["LiJianXiao", "wife_x", "wife_x"] });
+  const fStrict = familyScopeSql("wife_x", { registeredOwners: ["owner_x", "wife_x", "wife_x"] });
   ok("家人侧严格句：带已登记护栏且去重", fStrict.mode === "strict" && fStrict.where.includes("owner_user IN (?, ?)") && fStrict.params.length === 3, JSON.stringify(fStrict));
   const fEmpty = familyScopeSql("wife_x", { registeredOwners: [] });
   ok("身份表空 ⇒ fail-closed 只留本人条", fEmpty.mode === "strict-empty" && fEmpty.where === "owner_user = ?");
@@ -131,8 +147,8 @@ section("① 纯函数（身份表解析 / 默认值解析 / DDL / 过滤 SQL）
   }
   ok("缺 selfUser ⇒ 抛错（不静默放行）", threw);
 
-  eq("主人注入层：默认 owner-only", ownerScopeSql("LiJianXiao").where, "owner_user = ?");
-  ok("主人注入层：可选含共享", ownerScopeSql("LiJianXiao", { includeShared: true }).where.includes("family"));
+  eq("主人注入层：默认 owner-only", ownerScopeSql("owner_x").where, "owner_user = ?");
+  ok("主人注入层：可选含共享", ownerScopeSql("owner_x", { includeShared: true }).where.includes("family"));
 
   ok("生产路径判定：真生产 = true", isProductionDb(PROD));
   ok("生产路径判定：沙箱 = false", isProductionDb(path.join(ROOT, "sandbox", "memory.db")) === false);
@@ -145,12 +161,12 @@ section("② 库级：计划 / 迁移 / 幂等 / 干跑零写入");
   const dbFile = makeDb(path.join(TMP, "t1.db"));
   const db = new DatabaseSync(dbFile, { readOnly: true });
   const before = describeDb(db);
-  const plan = migrationPlan(db, { identity: { ok: true, exists: true, owner: "LiJianXiao", userids: ["LiJianXiao"], path: "x" } });
+  const plan = migrationPlan(db, { identity: { ok: true, exists: true, owner: "owner_x", userids: ["owner_x"], path: "x" } });
   db.close();
   eq("迁移前：6 列", before.columns.length, 6);
   eq("计划：缺两列", plan.missing, ["owner_user", "visibility"]);
   eq("计划：3 条语句（两列 + 索引）", plan.statements.length, 3);
-  ok("计划：默认值来自身份表", plan.defaultOwner.source === "identity-table" && plan.statements[0].includes("'LiJianXiao'"));
+  ok("计划：默认值来自身份表", plan.defaultOwner.source === "identity-table" && plan.statements[0].includes("'owner_x'"));
 
   const rw = new DatabaseSync(dbFile);
   const ran = applyMigration(rw, plan);
@@ -159,7 +175,7 @@ section("② 库级：计划 / 迁移 / 幂等 / 干跑零写入");
   eq("迁移后：条数不变", rw.prepare(`SELECT COUNT(*) c FROM ${MEMORIES_TABLE}`).get().c, 2);
   ok("迁移后：索引在位", hasIndex(rw, "memories_visibility"));
   const all = rw.prepare(`SELECT owner_user o, visibility v FROM ${MEMORIES_TABLE}`).all();
-  ok("存量行取默认值（主人私有）", all.every((r) => r.o === "LiJianXiao" && r.v === "private_owner"));
+  ok("存量行取默认值（主人私有）", all.every((r) => r.o === "owner_x" && r.v === "private_owner"));
   const plan2 = migrationPlan(rw, { identity: null });
   eq("幂等：第二次计划 0 语句", plan2.statements.length, 0);
   eq("幂等：两列已在位", plan2.present.sort(), ["owner_user", "visibility"]);
@@ -189,6 +205,20 @@ section("② 库级：计划 / 迁移 / 幂等 / 干跑零写入");
   ok("CLI apply：条数一致", p2.after.count === p2.before.count);
   const r3 = runCli(CLI.migrate, ["--db", dbFile2, "--apply", "--json"]);
   ok("CLI apply：二次幂等（无语句可跑）", r3.status === 0 && JSON.parse(r3.stdout).statementsRan === undefined);
+
+  // 未配 owner + 身份表缺位 ⇒ 存量行 owner_user 落空串（不抛错、不编造人名）
+  const dbFile3 = makeDb(path.join(TMP, "t-nullowner.db"));
+  const db3 = new DatabaseSync(dbFile3, { readOnly: true });
+  const plan3 = migrationPlan(db3, { identity: null });
+  db3.close();
+  eq("计划：未配 owner ⇒ 默认值为空串", plan3.defaultOwner.ownerUser, "");
+  ok("计划：说明行点名 $DSH_OWNER_USER", plan3.notes.some((n) => n.includes("$DSH_OWNER_USER")), JSON.stringify(plan3.notes));
+  eq("计划：source 标 unset（不是 fallback）", plan3.defaultOwner.source, "unset");
+  const rw3 = new DatabaseSync(dbFile3);
+  applyMigration(rw3, plan3);
+  const rows3 = rw3.prepare(`SELECT owner_user o FROM ${MEMORIES_TABLE}`).all();
+  ok("迁移后：存量行 owner_user 为空串（未配置就是不写，不编造）", rows3.length === 2 && rows3.every((r) => r.o === ""), JSON.stringify(rows3));
+  rw3.close();
 }
 
 // ---------------------------------------------------------------- ③ CLI 反向用例（fail-closed 闸门）
@@ -236,19 +266,24 @@ section("③ CLI 反向：打生产的三道闸 + 不可用不判过");
   eq("夹具：打生产路径 ⇒ exit 2（不接受逃生舱）", rf.status, 2);
   eq("夹具：库零改动", sha256File(fakeProd), sha0);
 
+  // 夹具身份表（临时文件，**绝不读本机真实身份表**）
+  const usersFile = path.join(ROOT, "users.json");
+  fs.writeFileSync(usersFile, JSON.stringify({ owner_x: { role: "owner" } }), "utf8");
+
   // 判据 4：库里没有 owner_user 列 ⇒ exit 2（不可用不判过）
   const dbNoCol = makeDb(path.join(TMP, "t4.db"));
   const ri = runCli(CLI.identity, ["--db", dbNoCol, "--users", path.join(ROOT, "none.json"), "--json"]);
   eq("判据 4：缺列 ⇒ exit 2（不算通过）", ri.status, 2);
   const dbCol = makeDb(path.join(TMP, "t5.db"));
-  runCli(CLI.migrate, ["--db", dbCol, "--apply", "--json"]);
+  // ⚠️ 必须显式给 --users：不给的话 CLI 会去读**本机真实身份表**（`~/.dsh/secretary-users.json`），
+  //    把本机 owner 写进夹具库 ⇒ 测试既不隔离、又会把真实账号带进断言（2026-11-04 实测踩到）。
+  const mig = runCli(CLI.migrate, ["--db", dbCol, "--users", usersFile, "--apply", "--json"]);
+  eq("迁移（带夹具身份表）：exit 0", mig.status, 0);
   const ri2 = runCli(CLI.identity, ["--db", dbCol, "--users", path.join(ROOT, "none.json"), "--json"]);
   eq("判据 4：身份表缺位 ⇒ exit 2（不可用不判过）", ri2.status, 2);
-  const usersFile = path.join(ROOT, "users.json");
-  fs.writeFileSync(usersFile, JSON.stringify({ LiJianXiao: { role: "owner" } }), "utf8");
   const ri3 = runCli(CLI.identity, ["--db", dbCol, "--users", usersFile, "--json"]);
   eq("判据 4：差集 0 ⇒ exit 0", ri3.status, 0);
-  eq("判据 4：库内 owner 只有主人", JSON.parse(ri3.stdout).diff.owners, ["LiJianXiao"]);
+  eq("判据 4：库内 owner 只有主人", JSON.parse(ri3.stdout).diff.owners, ["owner_x"]);
 
   // 判据 4 反向：造一条未登记 owner
   const db = new DatabaseSync(dbCol);
@@ -259,8 +294,17 @@ section("③ CLI 反向：打生产的三道闸 + 不可用不判过");
   eq("判据 4：红名单 = ghost_user", JSON.parse(ri4.stdout).diff.unregistered, ["ghost_user"]);
 
   // 判据 3：白名单不可用 ⇒ exit 2（fail-closed）
-  const rw2 = runCli(CLI.fieldname, ["--whitelist", path.join(ROOT, "no-such-whitelist.json"), "--json"]);
-  eq("判据 3：白名单不可用 ⇒ exit 2（不算通过）", rw2.status, 2);
+  // ⚠️ 2026-11-04 登记（卡【开源支线·真实账号泄漏修复】现跑发现，**与本次改动无关**）：
+  //    `memory-fieldname-check.mjs` 与它依赖的 `lib/fieldname-whitelist.json` **从未随本仓发布**
+  //    （生产树的 memory-db-tools 里有，本仓从未收录）⇒ 这条用例在公开仓里只能验
+  //    "脚本缺失 ⇒ 不判过"。补件须先脱敏白名单（里面是内部文件名清单），另卡跟踪。
+  //    这里**不写成恒真断言**：缺件就记一条 skip 并在结算里单列，不混进"通过"。
+  if (!fs.existsSync(CLI.fieldname)) {
+    skip("判据 3：memory-fieldname-check.mjs 未随仓发布 ⇒ 用例跳过（缺口已登记）");
+  } else {
+    const rw2 = runCli(CLI.fieldname, ["--whitelist", path.join(ROOT, "no-such-whitelist.json"), "--json"]);
+    eq("判据 3：白名单不可用 ⇒ exit 2（不算通过）", rw2.status, 2);
+  }
 
   // 判据 5 夹具：真跑沙箱库（造 6 条 + 断言）
   const dbFx = makeDb(path.join(TMP, "t6.db"));
@@ -292,7 +336,11 @@ section("④ 生产 memory.db 只读哨兵");
   ok("生产库：两列扩面仍在（owner_user / visibility）", cols.includes("owner_user") && cols.includes("visibility"), cols.join(","));
 }
 
-console.log(`\n==== 单测结果：${pass} 通过 / ${fails.length} 失败 ====`);
+if (ENV_OWNER_BEFORE === undefined) delete process.env.DSH_OWNER_USER;
+else process.env.DSH_OWNER_USER = ENV_OWNER_BEFORE;
+
+console.log(`\n==== 单测结果：${pass} 通过 / ${fails.length} 失败${skips.length ? ` / ${skips.length} 跳过` : ""} ====`);
+for (const s of skips) console.log(`  ⊘ 跳过：${s}`);
 for (const f of fails) console.log(`  ✗ ${f}`);
 try {
   fs.rmSync(ROOT, { recursive: true, force: true });

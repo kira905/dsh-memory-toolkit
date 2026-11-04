@@ -11,7 +11,7 @@
 //   --limit <n>                本次最多取多少条（0 = 不限）
 //   --max-chars-per-item <n>   送模型时单条正文截断长度（240）
 //   --max-calls / --max-tokens 每日成本闸（缺省取库里的 COST_LIMITS）
-//   --owner-user <id>          本机 owner 的 userid；缺省先查身份表，再不行用内置常量
+//   --owner-user <id>          本机 owner 的 userid；缺省先查身份表，再回落到 $DSH_OWNER_USER
 //   --state <file>             幂等台账落点（缺省 <home>/memory/domain-tags-state.json）
 //   --model / --base-url       分类模型档
 //   --no-daily-report          不写日报段
@@ -26,7 +26,16 @@ import { isMainEntry, parseArgs, num, makeLogger } from '../lib/cli-util.mjs';
 import * as D from '../lib/domain-tags.mjs';
 
 const EXIT = { OK: 0, FAIL: 1, USAGE: 2, ENV: 3 };
-const OWNER_FALLBACK = 'LiJianXiao';
+
+/**
+ * 内置兜底 = 部署环境变量 `$DSH_OWNER_USER`（缺省空串）。
+ * ⚠️ 这里**不写死任何 userid**：本包公开发布，代码里的字面量等于把作者账号一起发出去
+ * （2026-11-04 卡【开源支线·真实账号泄漏修复】）。空串 = 本机没配 owner。
+ */
+function ownerFallback() {
+  const raw = process.env.DSH_OWNER_USER;
+  return typeof raw === 'string' ? raw.trim() : '';
+}
 const OWNER_SOURCES = ['../../memory-db-tools/lib/memory-scope.mjs', '../dsh-memory-local/src/schema-migrate.mjs'];
 
 /** 数值型开关：源长什么样、落到哪个字段、不给时取什么。 */
@@ -46,8 +55,8 @@ if (isMainEntry(import.meta.url)) {
 }
 
 /**
- * 本机 owner 的 userid：先问权威实现，再问自检镜像，最后才用内置常量。
- * 顺序不能反 —— 常量只是兜底，不是口径。
+ * 本机 owner 的 userid：先问权威实现，再问自检镜像，最后才用环境变量兜底。
+ * 顺序不能反 —— 兜底只是兜底，不是口径。
  */
 async function resolveOwnerUser(explicit, home) {
   if (explicit) return { user: explicit, source: 'cli' };
@@ -55,10 +64,18 @@ async function resolveOwnerUser(explicit, home) {
     const hit = await askOwnerSource(rel, home);
     if (hit) return hit;
   }
+  const fallback = ownerFallback();
+  if (!fallback) {
+    return {
+      user: '',
+      source: '未配置（$DSH_OWNER_USER 为空 + 两条权威源都不可用）',
+      notes: ['⚠️ 本机 owner 未知 ⇒ 不做归属判断（工作集为空，不写库、不调模型）'],
+    };
+  }
   return {
-    user: OWNER_FALLBACK,
-    source: '内置回落（两条权威源都不可用）',
-    notes: ['⚠️ 身份表解析不可用 ⇒ 回落常量'],
+    user: fallback,
+    source: '内置回落（$DSH_OWNER_USER，两条权威源都不可用）',
+    notes: ['⚠️ 身份表解析不可用 ⇒ 回落 $DSH_OWNER_USER'],
   };
 }
 

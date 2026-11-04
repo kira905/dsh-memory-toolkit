@@ -190,7 +190,7 @@ var MemoryStore = class {
 		this.openWarnings = [];
 		const reason = (e) => (e && e.message ? e.message : String(e));
 		// ── FORK-EDIT(2026-09-21): 记忆引擎 v2 · S3b「绝不阻断 DSH 启动」加固 ──────────────────
-		// 背景（ROG 真机实测 2026-09-21，证据见 `docs\记忆引擎v2-S3b-交付-20260921.md` §B/C 与 §E2）：
+		// 背景（真机实测 2026-09-21，证据见内部交付记录 §B/C 与 §E2；该记录不在本仓）：
 		//   · 库**只读**（只读挂载 / 目录 ACL 拒写）时，上游那行 `PRAGMA user_version = N` 会抛
 		//     `unable to open database file` ⇒ 构造函数抛 ⇒ 插件 apply 抛 ⇒ **表结构自检根本跑不到**；
 		//   · 库**损坏**（非 SQLite 内容）时，上游的 `SCHEMA` exec 抛 ⇒ 插件 apply 抛 ⇒

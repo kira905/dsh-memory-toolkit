@@ -28,11 +28,30 @@ export const VISIBILITY_VALUES = Object.freeze(["private_owner", "family", "publ
 export const DEFAULT_VISIBILITY = "private_owner";
 
 /**
- * owner_user 缺省回落常量。
- * ⚠️ §3.3-3：它**不是**硬编码人名，而是"本机 owner 的 userid"的**回落值** —— 正常取值来自身份表
- * 里 role==='owner' 的那条；取不到身份表才回落这里，并在自检里**报一行**（见 resolveDefaultOwner）。
+ * owner_user 缺省**回落值**的来源：环境变量 `$DSH_OWNER_USER`。
+ *
+ * ⚠️ §3.3-3：这一层**不是**权威取值，而是"身份表缺位时的人工兜底" —— 正常取值来自身份表里
+ * `role==='owner'` 的那条；取不到身份表才落到这里，并在自检里**报一行**（见 resolveDefaultOwner）。
+ *
+ * 为什么不再写死一个 userid（2026-11-04 卡【开源支线·真实账号泄漏修复】）：
+ * 包一旦公开发布，代码里的字面量就等于把作者的账号一起发出去（0.2.0 已发生）。
+ * 兜底值属于**部署环境**的事实，不是包的常量 ⇒ 只能从 env 读，缺省空串。
+ * 空串时的语义 = "本机没配 owner"：`owner_user` 留空、notes 记一行提示，**不抛错**
+ * （抛错会让既有用户的迁移直接失败，比留空更糟）。
+ *
+ * @param {Record<string,string|undefined>} [env] - 默认 process.env（测试可注入）
+ * @returns {string} 配置了就是该值（trim 后），没配 = 空串
  */
-export const FALLBACK_OWNER_USER = "LiJianXiao";
+export function fallbackOwnerUser(env = process.env) {
+  const raw = env?.DSH_OWNER_USER;
+  return typeof raw === "string" ? raw.trim() : "";
+}
+
+/**
+ * 兼容导出：模块加载瞬间的 `$DSH_OWNER_USER` 快照。
+ * ⚠️ 运行时判定**请用 `fallbackOwnerUser()`** —— 快照不跟随进程内 env 变化（测试与长驻进程会踩）。
+ */
+export const FALLBACK_OWNER_USER = fallbackOwnerUser();
 
 /** 身份表相对 ~ 的路径（家人档 §3.3：`.dsh/secretary-users.json`，不进任何仓）。 */
 export const IDENTITY_TABLE_REL = Object.freeze([".dsh", "secretary-users.json"]);
@@ -213,21 +232,31 @@ export function readIdentityTable(homeOrFile, env = process.env) {
 
 /**
  * 解析 `owner_user` 的默认值（§3.3-3 的取值优先级）：
- *   ① 身份表里 `role === 'owner'` 的那条  ② 缺省回落常量（并在启动自检里**报一行**）。
- * 返回 `{ ownerUser, source: 'identity-table' | 'fallback', notes:[…] }`。
+ *   ① 身份表里 `role === 'owner'` 的那条  ② `$DSH_OWNER_USER`（并在启动自检里**报一行**）
+ *   ③ 两者都没有 ⇒ `ownerUser = ''` + notes 提示**未配置**（不抛错，见 fallbackOwnerUser 的说明）。
+ *
+ * 返回 `{ ownerUser, source: 'identity-table' | 'fallback' | 'unset', notes:[…] }`。
+ *
+ * @param {{ok:boolean,exists?:boolean,owner?:string|null,error?:string|null,path?:string}|null} identity
+ * @param {Record<string,string|undefined>} [env] - 默认 process.env（测试可注入）
  */
-export function resolveDefaultOwner(identity) {
+export function resolveDefaultOwner(identity, env = process.env) {
   const notes = [];
   if (identity && identity.ok && identity.owner) {
     return { ownerUser: identity.owner, source: "identity-table", notes };
   }
   if (identity && identity.exists && identity.ok && !identity.owner) {
-    notes.push(`身份表 ${identity.path} 存在但**没有任何 role==='owner' 的条目** → 回落常量`);
+    notes.push(`身份表 ${identity.path} 存在但**没有任何 role==='owner' 的条目** → 走回落`);
   } else if (identity && identity.error) {
-    notes.push(`身份表不可用（${identity.error}） → 回落常量`);
+    notes.push(`身份表不可用（${identity.error}） → 走回落`);
   }
-  notes.push(`owner_user 默认值回落常量 '${FALLBACK_OWNER_USER}'（身份表缺位时的人工兜底，非硬编码设计）`);
-  return { ownerUser: FALLBACK_OWNER_USER, source: "fallback", notes };
+  const fallback = fallbackOwnerUser(env);
+  if (!fallback) {
+    notes.push("未配置 owner（环境变量 $DSH_OWNER_USER 为空）⇒ owner_user 留空（不再回落到任何内置 userid）");
+    return { ownerUser: "", source: "unset", notes };
+  }
+  notes.push(`owner_user 默认值取 $DSH_OWNER_USER='${fallback}'（身份表缺位时的人工兜底，非硬编码）`);
+  return { ownerUser: fallback, source: "fallback", notes };
 }
 
 // ---------------------------------------------------------------- 列与迁移（§3.8 幂等做法）
@@ -271,8 +300,8 @@ export function quoteLiteral(s) {
  * 迁移计划（**只读**，不改库）：算缺哪些列、要跑哪些语句、默认值取什么。
  * 返回 `{ columns, missing, present, indexExists, statements, defaultOwner, notes }`。
  */
-export function migrationPlan(db, { identity = null, table = MEMORIES_TABLE } = {}) {
-  const resolved = resolveDefaultOwner(identity);
+export function migrationPlan(db, { identity = null, table = MEMORIES_TABLE, env = process.env } = {}) {
+  const resolved = resolveDefaultOwner(identity, env);
   const columns = columnsOf(db, table);
   const missing = NEW_COLUMNS.filter((c) => !columns.includes(c.name));
   const present = NEW_COLUMNS.filter((c) => columns.includes(c.name)).map((c) => c.name);
