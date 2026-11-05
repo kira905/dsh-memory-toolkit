@@ -3,6 +3,91 @@
 本仓的版本按**语义化版本**：改结论/改契约升主版本，加能力升次版本，修错别字与文档订正不升。
 英文摘要见每节末尾的 *English* 行。
 
+## v0.4.0 — 2026-11-06
+
+**记忆的写侧补齐三件：删得可追溯、写时留出处、事后能回填。** 三件都是**新文件**，
+`dsh-memory-local/src/index.js` 一行没动 ⇒ **装了不接线，行为与 0.3.0 逐字节一致**（接线点见各件头注释）。
+
+三件是一条链：`lineage-auto` 写侧预埋 → `lineage-backfill` 补 `source_ids` → `forget-ledger` 删除留痕。
+**必须一起用**（只装前两件 = 血缘填不满；只装第三件 = 删得清但说不清出处）。
+
+### ① 删留痕 `forget-ledger.mjs`（生产件 sha16 `3839963928cae33a` · 23,016 B → 本仓 `ef903fd79700857b` · 25,098 B）
+
+删一条记忆原本是 "DELETE 一行"，删完查不出「删了什么、谁删的、什么时候删的」。本件把删除改成
+**八步顺序**：归档正文 → 写台账 → 事务内复核 hash → 才 DELETE → COMMIT。
+
+- **归档根只走显式配置**（`config.removedRoot` → `DSH_MEMORY_REMOVED_ROOT` → `DSH_ROOT`，三级），
+  取不到 ⇒ **fail-closed 拒删**（宁可不删，也不删了没记）。为什么不给缺省值：归档里是**正文全文**，
+  落在任何"会被快照/备份整体收集"的目录里 ⇒ 一次备份就把正文搬出本机。
+- **台账只 append**（老行一个字节不碰）：一行 = 6 个必有字段（`at`/`by`/`hash`/`owner`/`reasonCode`/`host`）
+  + 7 个扩展字段（`op`/`memId`/`beforeRef`/`beforeBytes`/`textLength`/`seq`/`store`）。
+  扩展字段靠本件**自写 raw 行**落盘，不走通用校验器 —— 那类函数会把不认识的字段静默砍掉，
+  而老读器仍报 `invalid = 0`（判据假绿）。`host` 由调用方注入，不写死任何一台机器名。
+- **台账不放正文**：只放指针 `beforeRef`（相对归档根的 posix 路径）。
+- **事务内复核**：归档与 DELETE 之间重算内容 hash，不等 ⇒ `ROLLBACK`、记忆原样保留。
+- 附带只读体检 `auditRelations(db)`：报关系 tag 的脏边（形态错 / 指向不存在的 id / 只写一边）。
+- 硬约束：任一失败先 `ROLLBACK` 再抛 —— 共用连接停在开放事务里，会让后续写入"报成功却不落盘"。
+
+### ② 血缘写侧预埋 `lineage-auto.mjs`（生产件 sha16 `d1cac0b193b86a54` · 30,239 B → 本仓 `b3af20a5a1948ff4` · 31,658 B）
+
+`memory_write` 落库**之后**，把「这条记忆是在哪一轮对话里写下的」预埋进一行 pending 指针。
+
+- 三条设计（别改成同步 / 整文件解压）：**异步**（插件与宿主同进程，同步读会卡事件循环）、
+  **尾部优先**（从文件尾往前解 zstd 帧，拿到真人消息就停）、**过期即丢**（读前后各 stat 一次）。
+- **竞争只降级**：`size` 变小（被截断/重写）⇒ 整笔丢；`size` 变大（尾部追加）⇒ 重读，最多 2 次；
+  `mtime` 变化只作诊断、不作丢弃判据（写记忆那一刻几乎必然正在追加）。
+- **只放指针**：日志行只有 `memId`/`sessionId`/`turnTs`/`userHeadSha16`/`textSha16`/`len`/`at`/`host`；
+  落盘前自检「正文 ≥40 字前缀是否出现在行里」，命中即**拒写**。
+- **帧预算可配**（本版把 512 从硬编码提出来）：`note.maxFrames` > env `DSH_MEMORY_LINEAGE_MAX_FRAMES`
+  > `config.json#maxFrames` > 512。
+- **零库**：不 import 任何 sqlite 包、不打开任何 `.db`；**fail-open**：任何异常都吞掉，只留一行
+  `lineage.log`，绝不影响记忆写入。
+- 取"最后一条**真人**"的判据与索引器**同解**（跳过 `source.kind !== 'user'` 的注入消息）——
+  两边不同解的表现是整批 unmatched，而两侧各自的单测全绿。
+
+### ③ 血缘回填 `lineage-backfill.mjs`（生产件 sha16 `ae97b0569c474f19` · 49,315 B → 本仓 `d33927bc994dab33` · 61,012 B）
+
+读 pending 指针 → 按 `(session_id, ts)` 在索引库找块 → **先留痕** → 才 `UPDATE source_ids` → 写 `state.json`。
+CLI：`--report`（覆盖率读数）· `--recheck`（存活率重算）· 缺省 dry-run，`--apply` 才写。
+
+- **不写死表名**：块表按 `--chunk-table` > `chunks` > `life_chunks` > `memory_chunks` 探测，
+  命中后逐一核 7 个必需列；探不到 / 缺列 ⇒ 整轮拒动（rc 3），**不猜列名**。
+- **唯一写口可注入**：`--snapshot <file>` > env `DSH_MEMORY_SNAPSHOT_MODULE` > 候选路径；
+  找不到 ⇒ apply 时拒动（rc 3）—— **不新造第二个写口**（"先归档旧行全文再改"那条铁律只允许一个实现）。
+- **不碰 `updated_at`**：`UPDATE ... WHERE id=? AND source_ids=''`，`AND source_ids=''` 兼做并发守卫
+  （别人先写了 ⇒ `changes=0` ⇒ 计 blocked，绝不复写别人的值）。
+- **容量口径（跑一年不会卡）**：pending 分片按月（`pending-YYYY-MM.jsonl`），整月都已回填完的
+  自动改名成 `*.jsonl.done`（不再被读）；超期分片**缺省只列进 `prunable`、不删**，
+  要删得显式 `--prune-pending`（删是不可逆的，不替你决定）。
+- 索引闸 / 告警都是**可选**：`--index-log`（末行不是 `done ...` ⇒ 本轮跳过）、`--alert-log`；
+  不给就不判断、不写文件（不假设你用什么调度器）。
+
+### ④ 最小闭环夹具 `dsh-memory-local/test/test-memory-lineage-loop.mjs`（18 项，已进 `npm test`）
+
+三件**串起来**跑一次：预埋 1 条 → 回填 1 条 → forget 1 条留痕，全部产物走系统临时区。
+
+- 判据不止"跑通"：`source_ids` 必须等于 `[用户首块, 用户尾块, assistant 前 3]`、`updated_at` 一个字不动、
+  台账行 13 个字段齐、归档正文**全文**、`.done` 分片不再被读。
+- **4 条阴性对照**（改坏就红）：① 只有注入消息 ⇒ 不写 pending ② 写口抛错 ⇒ blocked 且库一个字节没改
+  ③ 写口若在 UPDATE 之后才被调 ⇒ 写口自己抛（顺序守卫）④ 写口找不到 ⇒ apply 拒动 rc=3。
+- 另有两件"同源断言"：本件的 zstd 帧解析与 `lib/zstd-frames.mjs` **逐帧一致**、会话文件选取与
+  `lib/session-file-name.mjs` 选中同一份 —— 内联副本一旦被改歪，夹具立刻红。
+
+### 不在本版范围
+
+- 插件接线（`memory_write` 之后调 `appendLineageAnchor`、`memory_forget` 改调 `forgetWithLedger`）
+  属**部署侧**，本仓只在头注释里写明接线点，不改 `index.js`。
+- 真实写口 `memory-snapshot.mjs`（归档旧行全文 + 台账）不在本仓，回填器的夹具用替身顶上；
+  缺了它 `--apply` 会拒动而不是"照写不误"。
+- 多用户 / 身份范围过滤、设备认账标记、家人侧四件：**不在本仓**（不含代码、夹具或口径）。
+
+*English*: v0.4.0 adds the three memory **write-side** pieces: `forget-ledger.mjs` (archive → ledger →
+in-transaction hash re-check → DELETE, fail-closed when no archive root is configured), `lineage-auto.mjs`
+(records which conversation turn a memory was written in — async, tail-first zstd frame scan, pointer-only,
+configurable frame budget), and `lineage-backfill.mjs` (fills `source_ids` from those pointers with a
+detected chunk table, an injectable single write port, and monthly pending shards archived once backfilled).
+No existing file changed; an 18-case loop fixture with 4 negative controls joins `npm test`.
+
 ## v0.3.0 — 2026-11-05
 
 **给记忆加了两件事：它从哪来（来源血缘），它到什么时候为止（时效）。** 都是**加能力**，不破既有行为。

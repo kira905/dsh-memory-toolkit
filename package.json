@@ -1,11 +1,11 @@
 {
   "name": "@kira905/dsh-memory-toolkit",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": false,
   "publishConfig": {
     "access": "public"
   },
-  "description": "DSH 记忆面工具集：独立向量记忆引擎（增量同步 / 混合召回 / 文档索引）+ 记忆库只读体检工具链 + 本地记忆插件 fork（含来源血缘 / 记忆时效）+ persona 记忆体检",
+  "description": "DSH 记忆面工具集：独立向量记忆引擎（增量同步 / 混合召回 / 文档索引）+ 记忆库只读体检工具链 + 本地记忆插件 fork（含来源血缘 / 记忆时效 / 删留痕 / 血缘回填）+ persona 记忆体检",
   "keywords": [
     "dsh",
     "deepseek-harness",
@@ -44,7 +44,8 @@
   "bin": {
     "dsh-memory-audit": "./persona-memory-audit.mjs",
     "dsh-memory-summary": "./memory-db-tools/list-memory-summary.mjs",
-    "dsh-memory-export": "./memory-db-tools/audit-export.mjs"
+    "dsh-memory-export": "./memory-db-tools/audit-export.mjs",
+    "dsh-memory-lineage": "./dsh-memory-local/lib/lineage-backfill.mjs"
   },
   "files": [
     "cordis.patch.yml",
@@ -64,9 +65,10 @@
   "scripts": {
     "help": "node memory-db-tools/audit-export.mjs --help",
     "audit": "node persona-memory-audit.mjs",
-    "test": "node memory-db-tools/_test/test-memory-scope.mjs && node dsh-memory-local/test/schema-migrate.test.mjs && node --test dsh-memory-local/test/until-expiry.test.mjs dsh-memory-local/test/source-ids.test.mjs && node memory-engine/test/run.mjs",
+    "test": "node memory-db-tools/_test/test-memory-scope.mjs && node dsh-memory-local/test/schema-migrate.test.mjs && node --test dsh-memory-local/test/until-expiry.test.mjs dsh-memory-local/test/source-ids.test.mjs && node dsh-memory-local/test/test-memory-lineage-loop.mjs && node memory-engine/test/run.mjs",
     "test:scope": "node memory-db-tools/_test/test-memory-scope.mjs",
     "test:engine": "node memory-engine/test/run.mjs",
+    "test:lineage": "node dsh-memory-local/test/test-memory-lineage-loop.mjs",
     "test:plugin": "node dsh-memory-local/test/regression.mjs",
     "test:recall": "npm run test:plugin && node --test dsh-memory-local/test/s2b.test.mjs dsh-memory-local/test/visible-injections.test.mjs",
     "test:memory": "node --test dsh-memory-local/test/until-expiry.test.mjs dsh-memory-local/test/source-ids.test.mjs"

@@ -68,7 +68,7 @@ Test-Path "$env:APPDATA\npm\dsh-memory-summary.CMD"                           # 
 |---|---|---|
 | [`memory-engine/`](./memory-engine/README.md) | 记忆引擎（离线层）：独立矢量库 · 增量同步 · 兜底 hash 轮转 · 混合召回（向量 + FTS5 + 词表 BM25 + RRF + 编码降级兜底 + 旁路留痕） · 文档索引 · 启动自检 · 本地编码桥 | 纯 Node ESM + `node:sqlite` |
 | [`memory-db-tools/`](./memory-db-tools/README.md) | 记忆库工具集：只读导出 / 六项体检分析 / 结构探针 / 特征词探针 / 与 persona 的重合度 / 看板账本只读探针 / 零改动自证 / 新会话开工简报 | 一组独立 CLI |
-| [`dsh-memory-local/`](./dsh-memory-local/README.md) | 本地记忆插件：上游 `dsh-memory` 的自持 fork（跨会话持久记忆 + 召回提示段 + 指针注入链），带构建 / 幂等部署 / 一键回滚 / 部署后自检 | DSH 插件 |
+| [`dsh-memory-local/`](./dsh-memory-local/README.md) | 本地记忆插件：上游 `dsh-memory` 的自持 fork（跨会话持久记忆 + 召回提示段 + 指针注入链）+ 写侧三件（删留痕 / 血缘预埋 / 血缘回填），带构建 / 幂等部署 / 一键回滚 / 部署后自检 | DSH 插件 |
 | [`persona-memory-audit.mjs`](./persona-memory-audit.mjs) | persona ↔ 记忆体检：把「persona 正文体积」与「记忆可见率」两项指标固定下来，超阈值即报红 | 单文件 CLI |
 | [`lib/`](./lib) | 四件共用的无依赖小件（参数白名单 / HTTP 存活判据 / zstd 帧解析 / 会话文件名 / 坑库打分） | 纯函数模块 |
 
@@ -110,6 +110,83 @@ Test-Path "$env:APPDATA\npm\dsh-memory-summary.CMD"                           # 
 
 > 多用户 / 身份范围过滤、设备认账标记、层标与写入影子判定、`src` 回指参数属部署侧私有实现，
 > **不在本仓**（不含其代码、夹具或口径）。
+
+## 删留痕 · 血缘预埋 · 血缘回填（0.4.0 新增）
+
+三件在 `dsh-memory-local/src/`，都**不改既有行为**（`index.js` 一行没动）。它们是一条链：
+
+```
+memory_write 落库 ──① lineage-auto ──▶ pending 日志（只放指针）
+                                          │
+                    ② lineage-backfill ◀──┘  → 回填 memories.source_ids（先留痕、再 UPDATE）
+memory_forget ───────③ forget-ledger ───▶ 归档正文 + 台账一行 → 才 DELETE
+```
+
+### ① 删留痕（`forget-ledger.mjs`）
+
+`schema` 不用动，调用侧只多一个开关：**归档根**。
+
+```bash
+# 三级解析：配置里的 removedRoot → env DSH_MEMORY_REMOVED_ROOT → env DSH_ROOT（⇒ <DSH_ROOT>/_archive/memory-removed）
+# 三者都取不到 ⇒ 拒绝删除（宁可不删，也不删了没记）。归档里是正文全文，别放进任何"整体备份"会收集的目录。
+export DSH_MEMORY_REMOVED_ROOT=/path/to/removed      # 或写进插件配置的 removedRoot
+```
+
+接线点（一行）：把 `memory_forget` 的实现从 `store.forget(id)` 换成
+
+```js
+import { forgetWithLedger, resolveRemovedRoot } from "./forget-ledger.mjs"
+const { root, source } = resolveRemovedRoot({ configured: config.removedRoot })
+forgetWithLedger({ db, dbPath, id, home, removedRoot: root, removedRootSource: source, storeKind: "owner" })
+```
+
+返回值：`{ forgotten, hash, beforeRef, beforeBytes, textLength, seq, archiveFile, ms }`。
+台账 = `<home>/memory/retractions.jsonl`（只 append；一行 13 个字段，正文一个字都不进）。
+
+### ② 血缘写侧预埋（`lineage-auto.mjs`）
+
+```js
+// memory_write 落库拿到 id 之后（**别 await**，它永不 reject、fail-open）
+appendLineageAnchor(record.id, exec, config, { sessionId, text })   // text 只用于算哈希与隐私自检，不落盘
+```
+
+开关：`DSH_MEMORY_LINEAGE=off` 或 `<home>/memory-lineage/config.json` 的 `{"enabled": false}`。
+帧预算：`note.maxFrames` > env `DSH_MEMORY_LINEAGE_MAX_FRAMES` > `config.json#maxFrames` > 512。
+日志：`<home>/memory-lineage/pending-<YYYY-MM>.jsonl`（指针）+ `lineage.log`（事件）。
+
+### ③ 血缘回填（`lineage-backfill.mjs`）
+
+```bash
+# 覆盖率读数（只读）：总分母 / 结构性分母 / 分子 / 存活率 / 分档
+node dsh-memory-local/src/lineage-backfill.mjs --report --days 7
+
+# 缺省 dry-run；真写要 --apply
+node dsh-memory-local/lib/lineage-backfill.mjs --apply --limit 50
+
+# 装成全局 bin 之后
+dsh-memory-lineage --report
+```
+
+参数（全都有缺省，按需覆盖）：
+
+| 参数 | 缺省 | 说明 |
+|---|---|---|
+| `--memory-db` | `<home>/memory/memory.db` | 记忆库（要写的那一侧） |
+| `--life-db` | `<home>/memory-life/life.db` | 索引库（只读） |
+| `--chunk-table` | 自动探测 `chunks` / `life_chunks` / `memory_chunks` | 块表名；探测到后核 7 个必需列 |
+| `--pending-dir` / `--state` / `--log` | `<home>/memory-lineage/` | 指针日志 / 回填状态 / 运行日志 |
+| `--snapshot` | 自动找 `memory-db-tools/memory-snapshot.mjs` | **唯一写口**；找不到就拒写（不新造第二个） |
+| `--index-log` / `--alert-log` | 不给 | 可选的索引闸与告警落点，不假设你的调度器 |
+| `--keep-pending-months` | 6 | `.done` 分片保留几个月（只算进 `prunable`） |
+
+**容量口径**：pending 分片按月滚，整月都已回填完的自动改名 `*.jsonl.done`（不再被读）；
+超期分片缺省**只列出不删**，要删得显式 `--prune-pending`。
+
+### 判据（`npm test` 里的一段）
+
+`dsh-memory-local/test/test-memory-lineage-loop.mjs` 把三件**串起来**跑一次（预埋 → 回填 → 删留痕），
+18 项断言，其中 4 条是阴性对照（只有注入消息、写口抛错、写口顺序反、写口缺失）。
+所有产物走系统临时区，不碰任何真实 home。
 
 ## 召回链：降级 / 词表第二路 / 命中留痕（0.2.0 新增）
 
