@@ -38,6 +38,9 @@
 | `src/schema-migrate.mjs` | fork 自研（表结构自检：`owner_user` / `visibility` 两列 + 索引，失败只降级不阻断启动） |
 | `src/source-ids-migrate.mjs` | fork 自研（v0.3.0：来源血缘 `source_ids` 独立列 + `schema_meta` 显式迁移键 + fail-closed 写闸） |
 | `src/until-expiry.mjs` | fork 自研（v0.3.0：`until:YYYYMMDD` 解析 / 过期判定 / 稳定分区，纯函数零依赖） |
+| `src/forget-ledger.mjs` | fork 自研（v0.4.0：删留痕 —— 归档正文 → 写台账 → 事务内复核 hash → 才 DELETE；归档根三级配置，取不到即 **fail-closed 拒删**） |
+| `src/lineage-auto.mjs` | fork 自研（v0.4.0：血缘写侧预埋 —— 尾部优先 zstd 帧扫描、竞争只降级、只放指针、帧预算四级可配） |
+| `src/lineage-backfill.mjs` | fork 自研（v0.4.0：血缘回填 CLI —— 块表探测不写死、唯一写口可注入、pending 分片按月滚动） |
 | `src/recall.mjs` · `src/pointer.mjs` · `src/memory-read.mjs` · `src/vectors-read.mjs` · `src/recall-log.mjs` · `src/module-gate.mjs` · `src/bridge.mjs` · `src/user-message.mjs` · `src/host-adapter.js` | fork 自研（召回链 / 指针渲染 / 只读源 / 旁路留痕 / 模块门 / 编码桥 / 宿主适配层） |
 
 **零第三方依赖判据**：`package.json` 的 `dependencies` 为空对象；运行期只 import
@@ -53,6 +56,9 @@ dsh-memory-local/
 ├─ src/schema-migrate.mjs  表结构自检（owner_user / visibility / 索引；失败只降级）
 ├─ src/source-ids-migrate.mjs  来源血缘 source_ids（v0.3.0；schema_meta 迁移键 + fail-closed）
 ├─ src/until-expiry.mjs    记忆时效 until:YYYYMMDD（v0.3.0；解析 / 判定 / 稳定分区）
+├─ src/forget-ledger.mjs   删留痕（v0.4.0；归档 → 台账 → 复核 → DELETE；没配归档根就拒删）
+├─ src/lineage-auto.mjs    血缘写侧预埋（v0.4.0；只读会话文件、只写 pending 指针）
+├─ src/lineage-backfill.mjs 血缘回填 CLI（v0.4.0；--report / --recheck / [--apply]）
 ├─ lib/                    构建产物（deploy 只搬这一层 + cordis.patch.yml + package.json）
 ├─ cordis.patch.yml        bundle patch（逐字节同上游）
 ├─ FORK-BASE.json          fork 基点元数据（上游 sha / 行数 / 来源 / 口径说明）
@@ -64,6 +70,8 @@ dsh-memory-local/
    ├─ schema-migrate.test.mjs  表结构自检单测（75 项）
    ├─ until-expiry.test.mjs    v0.3.0 时效单测（21 项；含阴性对照）
    ├─ source-ids.test.mjs      v0.3.0 血缘单测（14 项；含 fail-closed 与 FTS 隔离）
+   ├─ test-memory-lineage-loop.mjs  v0.4.0 写侧三件闭环夹具（18 项；含 4 条阴性对照）
+   ├─ fixtures/                 夹具替身：正常写口（带顺序守卫）/ 拒写写口（阴性对照）
    ├─ s2b.test.mjs             注入 / 召回 / 去重 / 降级四类单测（node --test）
    ├─ visible-injections.test.mjs 取事件面兼容性单测（node --test）
    ├─ test-adapter-converge.mjs   适配层收敛点用例（node --test）
