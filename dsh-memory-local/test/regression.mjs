@@ -7,13 +7,17 @@
  *                forget（命中、不存在）/ memory:recall 段文本 / 各错误消息
  *   · 汇总指纹 ：把两次运行的观测序列各算一个 sha256，不相等即 FAIL 并打印首个差异
  *
- * 这是「三个官方工具行为一致」的机器判据（不花 token、不碰任何 DSH home、只用临时库）。
+ * 这是「三个官方工具行为一致」的机器判据（不花 token、不写任何 DSH home、只用临时库；
+ * 缺省只**只读**地取本机 profile 里已 deploy 的实体，`--dsh-home` 同样只读）。
  *
  * 用法：
- *   node test/regression.mjs [--upstream <上游实体目录>] [--fork <fork实体或源码目录>]
+ *   node test/regression.mjs [--upstream <上游实体目录>] [--fork <fork部署实体目录>]
+ *                            [--dsh-home <DSH 实例 home>] [--subject <实体目录>]
  * 默认：上游 = _archive 里 deploy 备份的 official-entity（其次本机生产 profile 实体，只读）；
- *       fork = 本包（未部署时直接用源码 lib/）。
- * 退出码：0 = 完全一致 / 1 = 存在差异 / 2 = 用法错误 / 3 = 找不到上游对照物。
+ *       fork = $DSH_HOME（缺省 ~/.dsh）里已 deploy 的那份 dsh-memory 实体。
+ * 换机 / 只 clone 了仓、没把插件 deploy 进任何 profile 的机器：用 `--dsh-home <实例 home>` 指一个
+ * 装好的实例，或用 `--subject <实体目录>` 直接指定 —— 不必依赖本机 ~/.dsh（FORK-EDIT 2026-11-06）。
+ * 退出码：0 = 完全一致 / 1 = 存在差异 / 2 = 找不到 fork 实体（含用法错误）/ 3 = 找不到上游对照物。
  */
 import fs from 'node:fs'
 import os from 'node:os'
@@ -29,9 +33,31 @@ const argValue = (flag) => {
   return i >= 0 && args[i + 1] ? args[i + 1] : null
 }
 
+/**
+ * FORK-EDIT(2026-11-06): 实体定位的可注入入口（复审 B-4「落地端」）。
+ * 这个夹具原先只会去 `~/.dsh/profiles/web/node_modules/dsh-memory` 捞实体 —— 插件只能在「部署位置」
+ * 被加载（peer 依赖由 profile 闭包提供），所以只 clone 了仓、没把插件 deploy 进 profile 的机器上
+ * 必然 ERR_MODULE_NOT_FOUND / 找不到实体。两条注入路：
+ *   · `--dsh-home <dir>`：把候选根换成 `<dir>/profiles/web/node_modules/dsh-memory`（= 指一个装好的实例）；
+ *   · `--subject <dir>`：直接指被测那一侧的实体目录（不查 package.json 的 `fork` 标记）。
+ * 优先级一律：显式参数 > 环境变量（`$DSH_MEMORY_FORK_ENTITY` / `$DSH_HOME`）> 缺省。
+ */
+const dshHomeArg = argValue('--dsh-home')
+const subjectArg = argValue('--subject')
+/** DSH 实例里 dsh-memory 的部署位置（与缺省候选同一形状）。 */
+const entityInDshHome = (dshHome) => path.join(dshHome, 'profiles', 'web', 'node_modules', 'dsh-memory')
+/** 判据：目录里真有可 import 的实体入口。 */
+const hasEntity = (dir) => Boolean(dir) && fs.existsSync(path.join(dir, 'lib', 'index.js'))
+
 function findUpstream() {
   const explicit = argValue('--upstream')
   if (explicit) return explicit
+  // FORK-EDIT(2026-11-06): `--dsh-home` 指哪个实例，上游侧就取**那个实例里**的部署实体
+  // （两边同源 ⇒ 至少证明夹具本身在这台机上跑得通；它不是一致性证据，报告里要如实写）。
+  if (dshHomeArg) {
+    const inHome = entityInDshHome(dshHomeArg)
+    return hasEntity(inHome) ? inHome : null
+  }
   const archive = process.env.DSH_ARCHIVE || path.join(process.cwd(), '_archive')
   if (fs.existsSync(archive)) {
     const snaps = fs.readdirSync(archive)
@@ -49,13 +75,18 @@ function findUpstream() {
 /**
  * fork 侧默认取**隔离实例里的部署实体** —— 插件只能在「部署位置」被加载：
  * 它的 peer 依赖（@deepseek-ai/schemastery、@deepseek-ai/dsh-tools）由 profile 的闭包提供，
- * 源码目录（tools/dsh-memory-local）没有 node_modules，直接 import 会 ERR_MODULE_NOT_FOUND。
+ * 源码目录（dsh-memory-local）没有 node_modules，直接 import 会 ERR_MODULE_NOT_FOUND。
+ * FORK-EDIT(2026-11-06): `--subject` 直指实体（最高优先，也不查 `fork` 标记 —— 用它的人自己点名要测谁）；
+ * 其次是老的 `--fork` / `$DSH_MEMORY_FORK_ENTITY`；再其次 `--dsh-home <实例>`。
  */
 function findForkEntity() {
+  if (subjectArg) return subjectArg
   const explicit = argValue('--fork') ?? process.env.DSH_MEMORY_FORK_ENTITY ?? null
   if (explicit) return explicit
   const candidates = [
-    path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'profiles', 'web', 'node_modules', 'dsh-memory'),
+    dshHomeArg
+      ? entityInDshHome(dshHomeArg)
+      : path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'profiles', 'web', 'node_modules', 'dsh-memory'),
   ]
   for (const c of candidates) {
     const pkgFile = path.join(c, 'package.json')
@@ -83,12 +114,33 @@ function resolvableContext(dir) {
 
 const forkDir = findForkEntity()
 const upstreamDir = findUpstream()
+// FORK-EDIT(2026-11-06): 找不到实体时给人话 + 明确的退码，不静默通过、也不抛裸栈
+// （复审 B-4：老版本在别人的机器上直接炸 ERR_MODULE_NOT_FOUND，看不出该怎么办）。
+const dshHomeEntity = dshHomeArg ? entityInDshHome(dshHomeArg) : null
 if (!forkDir) {
-  console.error('[regression] 找不到 fork 部署实体：先把 fork 部署到隔离实例（deploy.mjs --target <DSH_HOME>），')
-  console.error('            或用 --fork <实体目录> / $DSH_MEMORY_FORK_ENTITY 显式指定部署位置。')
+  console.error('[regression] 找不到被测的 fork 实体（对照序列要加载它）。')
+  if (dshHomeEntity) console.error(`            --dsh-home 指的那个实例里没有 dsh-memory：${dshHomeEntity}`)
+  console.error('            任选一条：')
+  console.error('              · 先把它部署进一个 DSH 实例：node dsh-memory-local/deploy.mjs --target <DSH_HOME>')
+  console.error('              · 或指着已经装好的实例：--dsh-home <DSH_HOME>（取 <home>/profiles/web/node_modules/dsh-memory）')
+  console.error('              · 或直接指实体目录：--subject <实体目录>（也接受 --fork <dir> / $DSH_MEMORY_FORK_ENTITY）')
   process.exit(2)
 }
-if (!upstreamDir) { console.error('[regression] 找不到上游对照实体：用 --upstream <dir> 显式指定'); process.exit(3) }
+if (!hasEntity(forkDir)) {
+  console.error(`[regression] 这个目录不是可用的 dsh-memory 实体（缺 lib/index.js）：${path.resolve(forkDir)}`)
+  console.error('            要的是**装好的**实体目录（peer 依赖由 profile 闭包提供），不是源码仓根。')
+  process.exit(2)
+}
+if (!upstreamDir) {
+  console.error('[regression] 找不到上游对照实体（拿什么跟 fork 对比）。')
+  if (dshHomeEntity) console.error(`            --dsh-home 指的那个实例里没有 dsh-memory：${dshHomeEntity}`)
+  console.error('            怎么办：--upstream <官方实体目录>，或 --dsh-home <DSH_HOME> 指向已装好的实例。')
+  process.exit(3)
+}
+if (!hasEntity(upstreamDir)) {
+  console.error(`[regression] 上游对照目录不是可用的 dsh-memory 实体（缺 lib/index.js）：${path.resolve(upstreamDir)}`)
+  process.exit(3)
+}
 
 const fixtureText = 'regression fixture: DSH 记忆引擎 fork 基线（tags 归一化 + 中文）'
 const pinnedText = 'pinned fixture: 每轮都要出现的事实'
@@ -123,6 +175,11 @@ async function observe(label, dir) {
   }
   mod.apply(ctx, {
     path: dbFile, promptRecentCount: 10, promptMaxChars: 2000, maxTextChars: 2000,
+    // FORK-EDIT(2026-11-06): 生产侧 H2 分池改造（2026-10-22）把指路段拆成三档预算，新增两个池上限键，
+    // 并且 validateConfig 在**加载期**就校验它们是 `>= 1` 的整数 —— 夹具漏传会直接抛（复审 B-4 的 rc=1）。
+    // 取值都等于 `promptMaxChars`（两池合计硬上限）：夹具只写 2 条（其中 1 条 pinned，几百字符），
+    // 两个池各自设成总上限 = 不额外截断，对照的仍是「三工具 + memory:recall 段文本」的既有行为面。
+    promptPinnedMaxChars: 2000, promptRecentMaxChars: 2000,
     searchLimitDefault: 10, searchLimitMax: 50, promptOrder: 50,
     ...recallDefaults,
   })
@@ -251,6 +308,12 @@ for (let i = 0; i < Math.max(upstream.steps.length, fork.steps.length); i++) {
 
 console.log(`upstream : ${upstream.dir}`)
 console.log(`fork     : ${fork.dir}`)
+// FORK-EDIT(2026-11-06): 两侧解析到同一个实体（`--dsh-home` 那个实例只装了一份 / 本机没有官方对照物）时，
+// 指纹必然相等 —— 这一跑只证明「夹具本身跑得通」，**不构成一致性证据**，显式说出来别让人误读。
+const sameEntity = (() => {
+  try { return fs.realpathSync(upstreamPath) === fs.realpathSync(path.resolve(forkDir)) } catch { return false }
+})()
+if (sameEntity) console.log('⚠️  两侧同源（同一实体目录）：本次 rc=0 只证明夹具可跑通，不是「上下游一致」的证据。')
 console.log(`upstream fingerprint : ${upstream.fingerprint}`)
 console.log(`fork     fingerprint : ${fork.fingerprint}`)
 console.log(`steps compared       : ${upstream.steps.length}`)
