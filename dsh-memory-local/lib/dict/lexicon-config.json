@@ -1,0 +1,9 @@
+{
+  "_说明": "词表第二召回通道开关（方案 docs\\方案-词表第二召回通道-20261026.md §3.4）。改这里 + 重启 dsh 生效；删掉本文件 = 全部用代码内默认值（同样是词表开、FTS 关）。",
+  "_回滚": "lexiconEnabled=false ⇒ 立刻退回“只有向量”（零代码改动）；要退到词表上线前的现状（向量+FTS）⇒ lexiconEnabled=false 且 ftsEnabled=true。",
+  "lexiconEnabled": true,
+  "lexiconGate": 0.3,
+  "lexiconTopK": 20,
+  "ftsEnabled": false,
+  "lexiconTtlMs": 600000
+}

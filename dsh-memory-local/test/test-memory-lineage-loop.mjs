@@ -334,12 +334,21 @@ await checkAsync('阴性② 写口抛错 ⇒ blocked + 库未改一行', async (
   fs.writeFileSync(pendingFile, fs.readFileSync(pendingFile, 'utf8').split('\n').filter((l) => !l.includes(`"memId":${memId2},`)).join('\n'), 'utf8')
 })
 
-await checkAsync('阴性③ 写口找不到 ⇒ apply 拒动 rc=3（不新造第二写口）', async () => {
+await checkAsync('阴性③ 显式指了不存在的写口 ⇒ 回落到随仓那份真写口（不新造第二写口）', async () => {
+  // 0.4.1 起：真写口 `memory-snapshot.mjs` 随仓分发（`memory-db-tools/`）⇒ 不会再"一个都找不到"。
+  // 守的东西换成更硬的一条：显式给个不存在的路径时，回落到的必须是**同一份**真写口，不许现造一个。
+  // （"找不到 ⇒ apply 拒动 rc=3" 的代码路径仍在 `runBackfill` 里，只是本仓现在测不到 —— 写口确实在。）
+  const pick = backfill.resolveSnapshotModule({ snapshotModule: path.join(tmpRoot, 'no-such-snapshot.mjs') })
+  assert.ok(pick.file, `应回落到候选里的真写口，tried=${pick.tried.join(' | ')}`)
+  assert.match(
+    String(pick.file).replaceAll('\\', '/'),
+    /memory-db-tools\/memory-snapshot\.mjs$/,
+    `回落目标必须是真写口，实际 ${pick.file}`,
+  )
   const { rc, summary } = await backfill.runBackfill({
     ...commonOpts, apply: true, snapshotModule: path.join(tmpRoot, 'no-such-snapshot.mjs'),
   })
-  assert.equal(rc, 3, `写口缺失应 rc=3，实际 ${rc}`)
-  assert.match(String(summary.note), /写口未找到/, `应说清是写口没找到：${summary.note}`)
+  assert.equal(rc, 0, `写口在仓里 ⇒ 不该拒动；实际 rc=${rc} note=${summary.note}`)
 })
 
 // ══ Ⅳ ③ 删留痕 ═════════════════════════════════════════════════════════════

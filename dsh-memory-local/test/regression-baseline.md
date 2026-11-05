@@ -45,13 +45,22 @@ node dsh-memory-local/test/regression.mjs
 | 4 | `step[2] section.afterWrites` | 只有条目行 | 条目行前多两行「层标签说明」+ 条目带 `[core:pinned]` / `[tags recall:auto]` | fork 的注入段带层标签渲染（核心层 / 召回层 / 归档层的口径说明） |
 | 5 | `step[3] search.hit` | 渲染 `[reg 中文-标签]` | 渲染 `[reg 中文-标签 recall:auto]` | 同 2：标签在渲染里如实显示 |
 | 6 | `step[7] search.limitOverMax` | 同上（无层标签） | 同上（带 `core:pinned` / `recall:auto`） | 同 5 |
-| 7 | `step[10] forget.missing` | `ok:true · forgotten:false · "No memory #999999 to forget."` | `ok:false` · 错误「归档根未配置（`config.removedRoot` / `env DSH_MEMORY_REMOVED_ROOT` / `env DSH_ROOT` 三者都取不到）⇒ 已拒绝删除」 | FORK-EDIT「删留痕」：**宁可不删，也不删了没记**。测试环境没配归档根 ⇒ 走 fail-closed 分支 |
+| 7 | `step[10] forget.missing` | `ok:true · forgotten:false · "No memory #999999 to forget."` | `ok:false` · 错误「归档根未配置（`config.removedRoot` / `env DSH_MEMORY_REMOVED_ROOT` / `env DSH_ROOT` 三者都取不到）⇒ 已拒绝删除」 | FORK-EDIT「删留痕」：**宁可不删，也不删了没记**。测试环境没配归档根 ⇒ 走 fail-closed 分支（**0.4.1 起 `memory_forget` 已接线 `forgetWithLedger`，裸 DELETE 废止**，见下注） |
 | 8 | `step[11] forget.hit` | `ok:true · forgotten:true · "Forgot memory #1."` | 同上错误（拒绝删除） | 同 7 |
 | 9 | `step[12] section.afterForget` | 只列 `#2` | 两行层标签说明 + `#2`、`#1`（`#1` 未被删掉，因为第 8 步拒绝删除） | 同 7/8 的下游后果 |
 
-**⚠️ 关于第 7–9 条**：这三条差异的**根因是测试环境没配 `removedRoot`**，不是逻辑缺陷。
-要让它们变绿的正确做法 = 在测试配置里给一个临时归档目录（`removedRoot` / `DSH_MEMORY_REMOVED_ROOT`），
-让 forget 走成功分支；**不许**改成「不配也照删」（那正好毁掉这个闸要保的东西）。
+**⚠️ 关于第 7–9 条（2026-11-06 · 0.4.1 接线后订正口径）**：
+
+- **接线前后的差别**：0.4.0 及以前，仓内 `src/index.js` 的 `forget(id)` 是**裸 DELETE**（删了没留痕）；
+  0.4.1 起改调 `forget-ledger.mjs#forgetWithLedger`（归档正文 → 写台账 → 事务内复核 → 才 DELETE），
+  并且 `memory_write` 落库后异步调 `lineage-auto.mjs#appendLineageAnchor`（写侧预埋）。
+  ⇒ 仓内接线由 `test/test-wiring.mjs` 把关（含阴性对照），不靠这份基线。
+- **这三条差异的成因**（接线后仍然成立）：本夹具的 fork 侧取的是**部署实体**
+  （`<DSH_HOME>/profiles/web/node_modules/dsh-memory`），它**早已接线**；而测试环境没有配
+  `removedRoot` ⇒ `forgetWithLedger` 按设计 **fail-closed 拒删**。所以三条差异是「预期能力差」，
+  不是回归。
+- **要让它们变绿的正确做法**：在测试配置里给一个临时归档目录（`removedRoot` / `DSH_MEMORY_REMOVED_ROOT`），
+  让 forget 走成功分支；**不许**改成「不配也照删」（那正好毁掉这个闸要保的东西）。
 
 ## 4. 判绿与登记纪律
 

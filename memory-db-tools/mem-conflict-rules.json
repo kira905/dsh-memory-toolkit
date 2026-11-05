@@ -1,0 +1,49 @@
+{
+  "$comment": "记忆硬矛盾判据的可替换词表。代码只留机制，判据（哪种写法算日期/数值/枚举、哪些槽可判枚举）全部在这里。",
+  "version": 1,
+
+  "verdicts": {
+    "hard": "hard-conflict",
+    "none": "no-conflict",
+    "unknown": "unknown",
+    "ambiguous": "ambiguous"
+  },
+
+  "range": {
+    "$comment": "区间分隔符。不用 `-`：它与日期本体（2026-11-05）歧义。",
+    "separators": ["~", "～", "至"]
+  },
+
+  "dateMarkers": {
+    "$comment": "年/月/日的书面标记；用于 `2026年11月5日` 这类写法。",
+    "year": "年",
+    "month": "月",
+    "day": "日"
+  },
+
+  "units": ["条", "个", "张", "次", "分钟", "小时", "天", "GB", "MB", "kg", "cm", "%"],
+
+  "predicates": {
+    "$comment": "数值谓词：两边谓词不同则不可比（跨语义禁换算）。",
+    "currentValue": "现值",
+    "upperBound": "上限",
+    "lowerBound": "下限",
+    "total": "合计",
+    "upperPrefixes": ["≤", "<="],
+    "lowerPrefixes": ["≥", ">="]
+  },
+
+  "enumSlots": {
+    "$comment": "只有这里列出的槽才做枚举判；自由文本一律 unknown（防误杀同义词）。槽名按 `对象.方面` 约定，随用随加。",
+    "person.gender": ["男", "女"],
+    "person.maritalStatus": ["未婚", "已婚", "离异"]
+  },
+
+  "tags": {
+    "$comment": "从一条记忆里取判据入参用的 tag 约定（tag 本身是 ASCII，值域才是自然语言）。",
+    "factPrefix": "fact:",
+    "valuePrefix": "val:",
+    "contradictsPrefix": "contradicts:",
+    "contradictedByPrefix": "contradicted-by:"
+  }
+}

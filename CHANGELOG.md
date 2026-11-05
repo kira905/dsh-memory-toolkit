@@ -3,6 +3,100 @@
 本仓的版本按**语义化版本**：改结论/改契约升主版本，加能力升次版本，修错别字与文档订正不升。
 英文摘要见每节末尾的 *English* 行。
 
+## v0.4.1 — 2026-11-06
+
+**接线收口 + 判据面 + 追平。** `memory_write` / `memory_forget` 第一次**真的**接上 0.4.0 那三件
+（此前是"装了不接线"）；新增「硬矛盾」判据（判词表**外置 JSON**）；指针行改成「近 7 天带时分、更老只留日期」；
+`memory-db-tools` **30 件逐件判**（结论表见 §④）；`dsh-memory` 实体的两份可分发件追平（§⑤）。
+
+### ① 接线（`dsh-memory-local/src/index.js` · 44,699 → 50,132 B）
+
+0.4.0 交付了三件（删留痕 / 血缘预埋 / 血缘回填），但 `index.js` 一行没动 —— 装了不接线。
+本次接上两处（第三件 `lineage-backfill` 是 CLI，本来就独立跑）：
+
+- **写侧**：`memory_write` 落库、拿到 memoryId 之后，`void fireLineageAnchor(...)` 异步预埋「我在哪一轮」。
+  三条硬约束：**不 await、不拦、不改返回值**；模块缺失 / 任何异常 ⇒ 吞掉只上 stderr 一行（fail-open）；
+  `DSH_MEMORY_LINEAGE=off` ⇒ **零 import、零 IO、零日志**（与改动前逐字节等价）。
+- **删侧**：`forget(id)` 的裸 `DELETE` **废止**，改走 `forget-ledger.mjs#forgetWithLedger`
+  （归档正文 → 台账 → 事务内复核 hash → 才 DELETE）。归档根取不到 ⇒ **fail-closed 拒删**。
+
+⚠️ **行为变化（升级前读）**：`memory_forget` 现在要求**归档根已配置**
+（`config.removedRoot` / `DSH_MEMORY_REMOVED_ROOT` / `DSH_ROOT` 三者任一）。
+一条都没配时，删会**报错并拒绝**（宁可不删，也不删了没记）。这是有意的 fail-closed，不是 bug。
+
+夹具：`dsh-memory-local/test/test-wiring.mjs`（7 条，含阴性对照 —— 把接线抹掉必须翻红）。
+`dsh-memory-local/test/regression-baseline.md` 的「第 7–9 条」同一 commit 更新为接线后的口径。
+
+### ② 硬矛盾判据 `memory-db-tools/lib-mem-conflict.mjs` + `mem-conflict-rules.json`
+
+同一槽（`factKey` 相等）上两侧取值集合**交集为空** ⇒ `hard-conflict`。三个取值域：日期/时刻（区间）、
+数值（单位 + 谓词相同才比）、枚举（白名单槽）。其余一律 `unknown`（宁漏不假）。
+
+- 🔴 **判词表外置**：哪种写法算日期 / 数值 / 枚举、哪些槽可判枚举、区间分隔符、单位与谓词表、tag 前缀
+  —— 全在 `mem-conflict-rules.json`，**代码里 0 处硬编码判据**。
+- 换一套词表（另一门语言 / 另一套单位）：`DSH_MEM_CONFLICT_RULES=<你的 json>`；或用 `loadRules(file)` 自行解析。
+- 词表**缺字段即抛**（静默变成"什么都不能判"是更坏的结果）。
+- 夹具 `memory-db-tools/_test/test-mem-conflict.mjs`：35 条，含阴性对照（把「相交」退化成「等值」必须让
+  C1/C4/C7 翻红）+ 词表替换验证（删掉枚举槽 ⇒ 同一判定从 `hard` 变 `unknown`）。
+
+### ③ 指针行「近 7 天带时分」`pointer.mjs`（9,810 → 14,444 B）
+
+召回里一条记忆原本只有 `YYYY-MM-DD`，看不出「3 小时前」还是「20 小时前」（「昨晚」被说成「几天前」）。
+现在：距今 **< 7 天** ⇒ `YYYY-MM-DD HH:MM`（**本地时区**，绝不用 `toISOString()`），**≥ 7 天** ⇒ 只留日期。
+
+- 阈值可用 `DSH_MEMORY_POINTER_TIME_DAYS` 覆盖；`0` / 负数 / 非数字 ⇒ 回落默认（fail-open）。
+- 🔴 **三档硬预算一个字不放宽**（≤8 条 / ≤800 字 / ≤600 token）：多出来的 6 字从**本行摘要**让位，
+  摘要缩到 40 字仍放不下才丢这一条。夹具 `test/pointer-stamp.test.mjs`：14 条，含跨 7 天边界、
+  时区（本地 vs UTC 对照）、两条阴性对照（老数据渲染逐字节不变）。
+
+### ④ `memory-db-tools` 逐件判（30 件 · 结论表）
+
+**判据**：对外部用户是不是空转（拿掉本机环境还能不能用）。
+
+| 件 | 结论 | 理由 |
+|---|---|---|
+| `lib-mem-conflict.mjs` | **本批新增** | 通用判据，判词外置 |
+| `memory-snapshot.mjs` | **本批新增** | 「改正文」留痕的唯一写口；`lineage-backfill` 的硬前置（没它就 rc=3 拒动） |
+| `_test/test-memory-scope.mjs` | 保留仓内版 | 生产版增量是本机台账 / 设备分组 |
+| `audit-analyze` / `audit-dump-ids` / `audit-export` / `audit-persona-overlap` / `audit-struct-probe` / `audit-verify-unchanged` | 保留仓内版 | 仓内版已是提炼版（生产版更大 = 加了本机环境分支） |
+| `lib/known-devices.mjs` · `lib/memory-scope.mjs` · `memory-scope-fixture` · `memory-identity-check` · `memory-schema-migrate` · `refine-memories` | 保留仓内版 | 同上；**不追平生产增量**（增量全是本机事实） |
+| `audit-hit-probe` / `audit-ledger-probe` / `read-memories` / `read-memory-db` / `show-mem-times` / `check-memory-db` / `dump-memory-db` | **判定不值得开源**（已在仓内 = 历史遗留，本次不再追平） | 只读本机库结构；对外是空转 |
+| `list-memory-summary.mjs` | 保留仓内版 | 生产版 36 KB 的增量是设备分组 + 看板集成（本机事实） |
+| `memory-ask.mjs`（三层只读查询） | **本批不进** | 有价值，但绑本机库布局 + 规矩库路径；需专门卡 |
+| `memory-relate.mjs`（关系 tag 入口） | **本批不进** | 同上：引用插件 `forget-ledger` + 本机噪声词表 |
+| `recall-usefulness.mjs`（召回有用率） | **本批不进** | 绑宿主会话日志格式（版本敏感）+ 16 处本机夹具 |
+| `memory-change-audit.mjs`（留痕体检） | **本批不进** | 验的是本机台账的历史基线（前 26 行 sha）⇒ 对外空转 |
+| `memory-fieldname-check.mjs` + `lib/fieldname-whitelist.json` | **本批不进** | 一次性迁移闸；白名单是**本机文件的精确行**清单 ⇒ 对外是垃圾数据 |
+
+### ⑤ `dsh-memory` 生产实体追平（26 件 → 仓内 15 件 + 本批 1 件 + `dict/` 4 件）
+
+| 生产件 | 结论 | 理由 |
+|---|---|---|
+| `lexicon-recall.mjs` | **本批新增** | 中文稀疏召回（jieba 词表 + IDF×稀有度 + RRF）。只清了一处注释路径 |
+| `lib/dict/{词典,词频}.txt` + `lexicon-config.json` + `LICENSE-词典.md` | **本批新增（随仓发）** | 许可已核：来自 jieba（**MIT**），`LICENSE-词典.md` 原样随包保留即合规；本仓 AGPL-3.0 可与 MIT 共存 |
+| `module-gate.mjs` | **本批追平** | 状态名解析补 `mtime` 双取（迁移期两份都在时取新者，平手按新名）；含本机事实的注释已改成通用说法 |
+| `attrib-badge.mjs` | **不进** | 「认账标记」依赖本机的 `attrib-ledger` 全库结论；没有那份台账 ⇒ `badgeOf()` 恒返回空串 = 空转 |
+| `memory-identity` / `memory-layers` / `shadow-hook` / `shadow-verdict` | **不进（红线）** | 家人侧身份与可见范围件，留在私有侧 |
+| `index.js.bak-*`（2 份） | 不进 | 备份文件，不是源码 |
+| `index.js`（109,683 B，+1,135 行） | **本批不追平** | 增量里含大量私有面（家人侧 4 件 import / 认账 / 影子态 / 分层 / 硬矛盾 tag 接线 / 设备词面）。本批只做了**接线**（§①），全量追平见报告「待拍板」 |
+| `schema-migrate.mjs` | 不需追平 | 本仓 0.3.0 起已用 `fallbackOwnerUser()` 只读 `DSH_OWNER_USER`；生产版仍是真名字面量 —— **本仓是干净的那一侧** |
+| `bridge` / `recall` / `recall-log` / `until-expiry` / `injector` / `pointer` 等 | 逐件核过 | 差异属本机私有（路径 / 注释 / 本机分支）；`pointer` 按 §③ 追平，`until-expiry` 仓内版已是提炼版 |
+
+**核验读数**：仓内 12 条脱敏词表（私有标识，见脱敏口径档）逐条 **0 命中**；
+盘符绝对路径（`<盘符>:\` 后跟工作根）**0 命中**（判据本身在夹具里用拼接构造，不写字面量）。
+
+### 迁移与兼容
+
+- 装 0.4.1 **必须配归档根**，否则 `memory_forget` 拒动（见 §① 的 ⚠️）。
+- 指针行多了 ` HH:MM`：注入总量仍受 800 字 / 600 token 硬约束（靠缩摘要让位，不是放宽预算）。
+- `dict/` 新增 1.25 MB 数据（jieba 词典 + 频表）；不需要中文稀疏召回可以删掉该目录（相关能力自动 fail-open）。
+
+*English*: Wires the three 0.4.0 write-side pieces into `index.js` (lineage anchor on write, ledger-backed
+forget), adds a hard-conflict detector with an **externalized rule table**, renders recent pointer lines with
+`HH:MM` (7-day half-life, budget unchanged), ships `lexicon-recall` + the MIT-licensed jieba dictionary, and
+completes a per-file verdict table for the internal memory toolchain. **Breaking-ish**: `memory_forget` now
+requires a configured archive root and fails closed without one.
+
 ## v0.4.0 — 2026-11-06
 
 **记忆的写侧补齐三件：删得可追溯、写时留出处、事后能回填。** 三件都是**新文件**，

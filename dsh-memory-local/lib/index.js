@@ -109,9 +109,66 @@ import { ensureMemoryColumns, writeSchemaLog } from "./schema-migrate.mjs";
 import { ensureSourceIdsColumn, serializeSourceIds, parseSourceIds } from "./source-ids-migrate.mjs";
 // FORK-EDIT(2026-11-04): 记忆时效 —— `until:YYYYMMDD` 过期标注（纯函数；只读 tags，不碰表结构）
 import { annotateMatches, expiryNoteOf } from "./until-expiry.mjs";
+// FORK-EDIT(2026-11-06): 0.4.1 接线 —— 删留痕运行期槽（home / removedRoot / host）。
+// apply() 里赋值一次，forget() 每次读；归档根解析唯一出口 = forget-ledger.mjs#resolveRemovedRoot
+// （config.removedRoot → env DSH_MEMORY_REMOVED_ROOT → env DSH_ROOT → **取不到即 fail-closed**）。
+import { forgetWithLedger, resolveRemovedRoot, isFamilyDbPath } from "./forget-ledger.mjs";
+let FORGET_LEDGER_RUNTIME = null;
 // FORK-EDIT(2026-09-22): U3 adapter 接入 —— 宿主事实（ctx 服务名）收敛到适配层唯一源。
 // `inject` 是宿主契约声明、名字无法用"语义调用"消除，只能从 SVC 取常量（方案 §10.2 解法 A）。
 import { SVC } from "./host-adapter.js";
+
+// FORK-EDIT(2026-11-06): 0.4.1 接线 —— 记忆「观察血缘」写侧预埋（旁挂日志 · 零库写入 · 零拦截）
+// 做什么：`memory_write` 落库、拿到 memoryId 之后，**异步**调一次同目录 `lineage-auto.mjs#appendLineageAnchor`，
+//   往 `<DSH_HOME>/memory-lineage/pending-<YYYY-MM>.jsonl` 追加一行「我在哪一轮」（只放指针，不放正文）。
+// 三条硬约束（改这段不许破）：
+//   ① **不 await、不拦、不改返回值**：`memory_write` 的返回形态与延迟一字不变（异步 fire-and-forget）；
+//   ② fail-open：模块缺失 / 任何异常 ⇒ 吞掉 + 只上 stderr 一行（**绝不阻断 boot、绝不阻断写入**）；
+//   ③ 关掉时零动作：env `DSH_MEMORY_LINEAGE=off` ⇒ **零 import、零 IO、零日志**。
+// 不做的：不写 `source_ids`（仍由调用方手传，不传仍是空串）、不碰 `memories` 表 / `schema_meta` / 任何 SQL 字面量。
+let lineageAutoModule = null;
+let lineageAutoTried = false;
+/** 懒加载（同目录 `lineage-auto.mjs`；**永不抛**；失败也缓存 —— 不每次写都重试同一个坏路径）。 */
+async function loadLineageAuto() {
+	if (lineageAutoTried) return lineageAutoModule;
+	lineageAutoTried = true;
+	try {
+		const mod = await import("./lineage-auto.mjs");
+		if (mod && typeof mod.appendLineageAnchor === "function") lineageAutoModule = mod;
+		else throw new Error("导出里没有 appendLineageAnchor");
+	} catch (error) {
+		lineageAutoModule = null;
+		console.warn(`[memory] 观察血缘预埋模块不可用（lineage-auto.mjs）：${error?.message ?? error} —— 预埋跳过，写入路径不受影响`);
+	}
+	return lineageAutoModule;
+}
+/** 写后异步预埋（**调用方不 await**；返回的 promise **永不 reject**，只给夹具看）。 */
+function fireLineageAnchor(memId, exec, config, note) {
+	try {
+		return loadLineageAuto()
+			.then((mod) => (mod ? mod.appendLineageAnchor(memId, exec, config, note) : null))
+			.catch((error) => {
+				console.warn(`[memory] 观察血缘预埋异常（已忽略，不影响写入）：${error?.message ?? error}`);
+				return null;
+			});
+	} catch (error) {
+		console.warn(`[memory] 观察血缘预埋调度异常（已忽略，不影响写入）：${error?.message ?? error}`);
+		return Promise.resolve(null);
+	}
+}
+/** 当前会话 id 的唯一取法（`exec.agent` → session.id / session.header.id / agent.id）。 */
+function sessionIdOfAgent(agent) {
+	try {
+		if (!agent || typeof agent !== "object") return null;
+		const session = agent.session;
+		if (session && typeof session.id === "string" && session.id.length > 0) return session.id;
+		if (session && session.header && typeof session.header.id === "string" && session.header.id.length > 0) return session.header.id;
+		if (agent.id !== void 0 && agent.id !== null) return String(agent.id);
+		return null;
+	} catch {
+		return null;
+	}
+}
 
 //#region src/store.ts
 /** Monotonic on-disk schema version; a mismatch rebuilds the derived index. */
@@ -376,7 +433,25 @@ var MemoryStore = class {
 	forget(id) {
 		// FORK-EDIT(2026-09-21): 降级 store ⇒ 等同于"没删掉任何东西"（**不谎报成功**）
 		if (this.#isDown()) return false;
-		return this.#db.prepare("DELETE FROM memories WHERE id = ?").run(id).changes > 0;
+		// FORK-EDIT(2026-11-06): 0.4.1 接线 —— 裸 DELETE 已废止，改走「归档 → 台账 → 事务内复核 → DELETE → COMMIT」：
+		// ① 先把整条原文落一份归档（fsync；落 `<removedRoot>/<stamp>/<id>-<hash12>.json`，不进快照白名单）；
+		// ② 台账 raw 单行 append（**不复用通用 retraction 台账器** —— 它会把扩展字段静默砍掉）；
+		// ③ 事务内重算 contentHashOf 与归档值比对，不等即 ROLLBACK 拒删（治「读→归档→删」窗口里正文被改）；
+		// ④ 任一失败先 ROLLBACK 再抛（共享连接停在开放事务里 ⇒ 之后 memory_write 报成功却不落盘）。
+		// 归档根取不到 / 不可写 ⇒ fail-closed 拒删（宁可不删，也不删了没记）。
+		const rt = FORGET_LEDGER_RUNTIME || {};
+		const forgetHome = rt.home || process.env.DSH_HOME || path.join(os.homedir(), ".dsh");
+		const rootPick = resolveRemovedRoot({ configured: rt.removedRoot, env: process.env, home: forgetHome });
+		return forgetWithLedger({
+			db: this.#db,
+			dbPath: this.#dbPath,
+			id,
+			storeKind: isFamilyDbPath(this.#dbPath, forgetHome) ? "family" : "owner",
+			home: forgetHome,
+			removedRoot: rootPick.root,
+			removedRootSource: rootPick.source,
+			host: rt.host || process.env.COMPUTERNAME || os.hostname()
+		}).forgotten;
 	}
 	/**
 	* Total stored memories.
@@ -626,6 +701,12 @@ function apply(ctx, config) {
 	// FORK-EDIT(2026-09-21): 指针注入接线（记忆引擎 v2 · S2b · 方案 §3.4/§6.1/§7）---------
 	// 结构：logger（JSON 行 + 轮转 3×30 天）→ moduleGate（L2 模块位自我 drain）→ injector（编排）
 	const recallConfig = resolveRecallConfig(config);
+	// FORK-EDIT(2026-11-06): 0.4.1 接线 —— 删留痕运行期槽（配置在 apply 期解析一次，forget() 每调用读它）。
+	FORGET_LEDGER_RUNTIME = {
+		home: recallConfig.home,
+		removedRoot: config.removedRoot || "",
+		host: process.env.COMPUTERNAME || os.hostname()
+	};
 	const recallLogger = createRecallLogger({ dir: recallConfig.logsDir });
 	const moduleGate = createModuleGate({ home: recallConfig.home });
 	const injector = createRecallInjector({ config: recallConfig, logger: recallLogger, moduleGate });
@@ -796,11 +877,16 @@ function apply(ctx, config) {
 			kind: "edit",
 			rawInput: args
 		}),
-		async execute(args) {
+		async execute(args, exec) {
 			const text = args.text.trim();
 			if (text.length === 0) throw new Error("memory_write: `text` must not be blank");
 			if (text.length > config.maxTextChars) throw new Error(`memory_write: \`text\` is ${text.length} chars, over the ${config.maxTextChars} limit`);
 			const record = open().write(text, normalizeTags(args.tags ?? []), args.pinned ?? false, args.source_ids);
+			// FORK-EDIT(2026-11-06): 0.4.1 接线 —— 观察血缘：**落库后**异步预埋「我在哪一轮」（不 await / 不拦 / 不改返回值）。
+			// 开关关 ⇒ 零动作（连 import 都不做）。`text` 只用于算 `textSha16` / `len` 与隐私自检，**绝不落盘**。
+			if (!/^(0|false|off|no)$/i.test(String(process.env.DSH_MEMORY_LINEAGE ?? ""))) {
+				void fireLineageAnchor(record.id, exec, config, { text, tags: record.tags, sessionId: sessionIdOfAgent(exec && exec.agent) });
+			}
 			return {
 				id: record.id,
 				tags: record.tags,

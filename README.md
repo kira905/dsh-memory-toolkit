@@ -111,6 +111,60 @@ Test-Path "$env:APPDATA\npm\dsh-memory-summary.CMD"                           # 
 > 多用户 / 身份范围过滤、设备认账标记、层标与写入影子判定、`src` 回指参数属部署侧私有实现，
 > **不在本仓**（不含其代码、夹具或口径）。
 
+## 0.4.1：接线收口 · 硬矛盾判据 · 指针带时分 · 追平
+
+### ① 接线（**升级前必读**）
+
+`memory_write` / `memory_forget` 接上 0.4.0 那三件：写后异步预埋血缘、删除走「归档 → 台账 → 复核 → DELETE」。
+
+⚠️ **`memory_forget` 现在要求归档根已配置**（`config.removedRoot` / `DSH_MEMORY_REMOVED_ROOT` / `DSH_ROOT` 任一）。
+一条都没配 ⇒ **报错并拒绝删除**（宁可不删，也不删了没记）。这是有意的 fail-closed。
+
+### ② 硬矛盾判据（`memory-db-tools/lib-mem-conflict.mjs`）
+
+同一槽上两侧取值集合**交集为空** ⇒ `hard-conflict`（日期/时刻按区间、数值按单位+谓词、枚举按白名单）；
+其余一律 `unknown`（宁漏不假）。
+
+🔴 **判词表外置**在 `memory-db-tools/mem-conflict-rules.json` —— 哪种写法算日期/数值/枚举、哪些槽可判枚举、
+区间分隔符、单位与谓词表、tag 前缀全在表里，代码里 0 处硬编码判据。换一套词表不用改代码：
+
+```
+DSH_MEM_CONFLICT_RULES=/path/to/your-rules.json   # 或 import { loadRules } from '.../lib-mem-conflict.mjs'
+node memory-db-tools/_test/test-mem-conflict.mjs --all    # 35 条夹具，含阴性对照
+```
+
+### ③ 指针行「近 7 天带时分」
+
+召回里的一条记忆原本只有 `YYYY-MM-DD`。现在距今 **< 7 天** ⇒ `YYYY-MM-DD HH:MM`（**本地时区**），
+**≥ 7 天** ⇒ 只留日期。阈值可用 `DSH_MEMORY_POINTER_TIME_DAYS` 覆盖（`0`/非法 ⇒ 回落 7 天）。
+
+三档硬预算（≤8 条 / ≤800 字 / ≤600 token）**一个字不放宽**：多出来的 6 字从**本行摘要**让位。
+
+### ④ 「改正文」留痕写口（`memory-db-tools/memory-snapshot.mjs`）
+
+改一条记忆的正文原本是「旧正文就地蒸发、台账一个字不写」。本件把它做成可回溯：
+**先落旧行全文 + 记一行指针，才允许 UPDATE**（顺序铁律，任一步失败 ⇒ 不执行 UPDATE，库未改一行）。
+
+```
+# 把 UPDATE 包给它（快照没过就不会执行你的命令）
+node memory-db-tools/memory-snapshot.mjs --id 42 --reason "把旧路径改成新路径" --wrap-exec "node your-script.mjs --apply"
+node memory-db-tools/memory-snapshot.mjs --selftest     # 12/12
+```
+
+⚠️ 归档根**没有缺省值**：必须给 `--removed-root`（或 `DSH_MEMORY_REMOVED_ROOT` / `DSH_ROOT`），且不许落在 home 下
+（归档里是正文全文，落进快照/备份的收集目录 = 一次备份就把正文搬出机）。
+
+### ⑤ 中文稀疏召回（`lexicon-recall.mjs` + `dict/`）
+
+补上 hybrid search 里「稀疏」那一路：jieba 词表最长匹配切词 + 「库内 df 的 IDF × 通用词频稀有度」打分，
+与向量路一起喂 RRF 融合。开关与门槛读 `dsh-memory-local/lib/dict/lexicon-config.json`。
+
+词表来自 **jieba**（MIT），`dict/LICENSE-词典.md` 随包保留即合规（约 1.25 MB 数据，不需要可整目录删掉 ⇒ 自动 fail-open）。
+
+### ⑥ `memory-db-tools` 逐件判（30 件）
+
+结论表在 `CHANGELOG.md` v0.4.1 §④：**外面对谁有用就搬，只读本机库结构的判定"不值得开源"**（不整目录上）。
+
 ## 删留痕 · 血缘预埋 · 血缘回填（0.4.0 新增）
 
 三件在 `dsh-memory-local/src/`，都**不改既有行为**（`index.js` 一行没动）。它们是一条链：

@@ -13,6 +13,32 @@ import path from 'node:path';
 export const MODULE_ID = 'memory-recall';
 export const AUTONOMY_FILE = 'butler-autonomy.json';
 
+/**
+ * 状态名存在性优先解析（与外部 `state-paths.mjs` 同源读序；本包部署在 node_modules ⇒ 不跨树 import）。
+ *
+ * FORK-EDIT(2026-11-06 · 装包链「读序漂移」显式表态 = **改**):
+ * 旧实现是**单边**判据 `新名存在 → 新名，否则旧名`，与真源 `resolveStatePath` 的读序有两处漂移：
+ *   ① **两边都有**时真源取 **mtime 新者**（同毫秒按新名优先）并置 `conflict=true`；旧实现无条件取新名 ⇒
+ *      状态名迁移期（dual）里若旧名那份更新，本门读到的是**过期开关**：外面关了 `memory-recall`、
+ *      插件这边照旧当"开"，表现为「关不掉」（反向则是"该开的开不了"）。这条对本线尤其致命 —— 它管的正是记忆注入。
+ *   ② 都不存在时真源按 `mode` 决定返回哪个（legacy 期给旧名）；旧实现恒给旧名。**行为等价**（missing ⇒ 下面一律
+ *      fail-safe 判关），故保留旧兜底，不引入 mode 依赖（本包不跨树 import，也不读迁移元数据）。
+ * 现在只补 ①：`existsSync` 换成 `statSync().mtimeMs` 双取 + 平手按新名。**新旧名只有一份时行为不变**。
+ */
+const statMsOrNull = (p, io) => { try { return io.statSync(p).mtimeMs; } catch { return null; } };
+const resolveStateFile = (home, name, io = fs) => {
+  try {
+    const nw = name.startsWith('butler-') ? 'ops-' + name.slice(7) : name;
+    const pNew = path.join(home, nw);
+    const pOld = path.join(home, name);
+    const sNew = statMsOrNull(pNew, io);
+    const sOld = statMsOrNull(pOld, io);
+    if (sNew !== null && sOld !== null) return sNew >= sOld ? pNew : pOld;
+    if (sNew !== null) return pNew;
+    return pOld;
+  } catch { return path.join(home, name); }
+};
+
 export function createModuleGate({
   home,
   file = AUTONOMY_FILE,
@@ -22,7 +48,7 @@ export function createModuleGate({
   fsImpl = fs,
 } = {}) {
   if (!home) throw new Error('module-gate: 必须给 home（DSH_HOME）');
-  const target = path.join(home, file);
+  const target = resolveStateFile(home, file, fsImpl);
   let cache = null; // { enabled, reason, at, mtimeMs }
 
   const read = (force) => {
