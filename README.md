@@ -24,6 +24,15 @@
 >
 > 三个 CLI 全部只读、不启服务。装法与自检见下方「装完自检」。
 
+> ### 它不附带什么（先看清楚，省得装完失望）
+>
+> 这套开源出来的是**能用的工具 + 装完自检 + 设计文档**。有两块**不在开源范围里**：
+>
+> 1. **「自己盯着活干」的那套引擎**：定时调度、队列盯守、管家日报、自主决定要不要动手 —— 这几件还没整理出来放（整理完会陆续放）。它的**设计本身是公开的**，写在 [`ops-handoff-design`](https://github.com/kira905/ops-handoff-design) 仓里，想自己实现的人照着做得到。
+> 2. **「出事喊到人」的通道**：企业微信、语音播报这类 —— **不随开源发布**。
+>
+> 所以：装完你拿到的是一套**能用的工具**，不是一个会自己上班的管家。
+
 ---
 
 > **本仓装完即用**（0.1.3 起）：`dsh plugin --profile <profile> add @kira905/dsh-memory-toolkit` 一条命令，`dsh.bundle` 会让它自动挂进 profile 的组合列表，**不需要再手工写 `cordis.patch.yml`**。包内 3 个 CLI（`dsh-memory-audit` / `dsh-memory-summary` / `dsh-memory-export`）与挂载无关，`npm i -g` 或 `npx` 直接用。
