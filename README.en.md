@@ -387,11 +387,11 @@ audit CLIs; options ② and ③ above remain available.
 | `dsh-memory-export` | Quarterly audit step 1: read-only `memory.db` → JSON | read-only |
 | `dsh-memory-lineage` | Provenance backfill / coverage readout (`--report` is read-only) | dry-run |
 | `dsh-mem-selfcheck` | Startup self-check: vector table / schema / encoder / dim / hostId | read-only |
-| `dsh-mem-sync` | Incremental sync (`--dry-run` plans only) | dry-run |
-| `dsh-mem-sweep` | Hash sweep: verify `text_hash` segment by segment | dry-run |
+| `dsh-mem-sync` | Incremental sync (`--dry-run` plans only, writes nothing) | 🔴 **writes** |
+| `dsh-mem-sweep` | Hash sweep: re-encode rows whose `text_hash` does not match / are missing from the vector DB (`--dry-run` writes nothing) | 🔴 **writes** |
 | `dsh-mem-recall` | Recall (vector + FTS + lexicon + RRF), manual inspection | read-only |
 | `dsh-mem-serve-start` | Idempotent encoding-bridge launcher | starts a process |
-| `dsh-mem-doc-index` | Documents → index DB incremental sync | dry-run with `--dry-run` |
+| `dsh-mem-doc-index` | Documents → index DB incremental sync (`--dry-run` computes only) | 🔴 **writes** |
 | `dsh-mem-doc-index-rebuild` | Index escape hatch: rebuild / snapshots / restore | **writes** |
 | `dsh-mem-layer-migrate` | Add the `layer` column (back up first) | dry-run |
 | `dsh-mem-layer-move` | Soft eviction: move a whole layer out / back (never deletes) | dry-run |
@@ -400,7 +400,7 @@ audit CLIs; options ② and ③ above remain available.
 | `dsh-mem-distill` | Cluster recent memories → model compresses to one entry | dry-run |
 | `dsh-mem-distill-sessions` | Session `.jsonl` → only conclusions that can cite their source | dry-run |
 | `dsh-mem-distill-rollback` | Revert distilled entries by group / id (snapshot first) | dry-run |
-| `dsh-mem-pitfall-hook` | Pitfall-library vector hook: set / inspect / consume the marker | `--status` read-only |
+| `dsh-mem-pitfall-hook` | Pitfall-library vector hook: set / inspect / consume the marker | dry (`--status` read-only; `--run` without `--apply` writes nothing) |
 
 **Notes.** (a) `--help` works on `band-sentinel` / `distill` / `distill-rollback` / `distill-sessions` /
 `layer-migrate` / `layer-move` / `serve-start` and the four `dsh-memory-*`; the rest (`selfcheck` / `sync` /

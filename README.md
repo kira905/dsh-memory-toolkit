@@ -80,11 +80,11 @@ Test-Path "$env:APPDATA\npm\dsh-memory-summary.CMD"                           # 
 | 命令 | 干什么 | 缺省是否动库 |
 |---|---|---|
 | `dsh-mem-selfcheck` | 启动自检：向量表 / schema / 编码器 / 维度 / hostId | 只读 |
-| `dsh-mem-sync` | 增量同步（`--dry-run` 只报计划） | 干跑 |
-| `dsh-mem-sweep` | 兜底轮转：按 id 段校验 `text_hash` | 干跑 |
+| `dsh-mem-sync` | 增量同步（`--dry-run` 只报计划、一条不落盘） | 🔴 **会写** |
+| `dsh-mem-sweep` | 兜底轮转：按 id 段重编码「正文哈希对不上 / 库里压根没有」的条目（`--dry-run` 不落盘） | 🔴 **会写** |
 | `dsh-mem-recall` | 召回（向量 + FTS + 词表 + RRF），人工查验用 | 只读 |
 | `dsh-mem-serve-start` | 编码桥幂等启动（在跑就探活、不在跑才拉起） | 会起进程 |
-| `dsh-mem-doc-index` | 文档 → 索引库增量同步 | 干跑 `--dry-run` |
+| `dsh-mem-doc-index` | 文档 → 索引库增量同步（`--dry-run` 只算不写） | 🔴 **会写** |
 | `dsh-mem-doc-index-rebuild` | 索引库逃生舱：重建 / 快照 / 回滚 | **会写** |
 | `dsh-mem-layer-migrate` | 加 `layer` 字段（动 schema 先备份） | 干跑 |
 | `dsh-mem-layer-move` | 软淘汰：整层搬进边表 / 搬回（不删） | 干跑 |
@@ -93,7 +93,7 @@ Test-Path "$env:APPDATA\npm\dsh-memory-summary.CMD"                           # 
 | `dsh-mem-distill` | 窗口内记忆聚类 → 模型压成一条写回 | 干跑 |
 | `dsh-mem-distill-sessions` | 会话 `.jsonl` → 只抽可回指的结论句 | 干跑 |
 | `dsh-mem-distill-rollback` | 提炼产物按组 / 按 id 撤回（先快照再删） | 干跑 |
-| `dsh-mem-pitfall-hook` | 坑库向量钩子：置标记 / 看标记 / 消费标记 | `--status` 只读 |
+| `dsh-mem-pitfall-hook` | 坑库向量钩子：置标记 / 看标记 / 消费标记 | 预演（`--status` 只读、`--run` 不带 `--apply` 不写） |
 
 **三点注意**
 

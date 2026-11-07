@@ -75,6 +75,11 @@ node cli\selfcheck.mjs --json
 
 ## 常用命令
 
+> ⚠️ **缺省动不动库，差别很大（0.5.2 起写清）**：下面三条**不给 `--dry-run` 就真写** ——
+> `sync`（写独立向量库）、`sweep`（重编码写向量库）、`doc-index`（写索引库）；
+> 而 `layer-migrate` / `layer-move` / `distill*` / `domain-tags` / `pitfall-hook` 缺省就是干跑或只读。
+> **别对着生产库试参数**：先 `cp` 一份副本，用 `--memory-db` / `--vectors-db` 指过去。
+
 ```powershell
 # 一次性：取权重（fp32 90MB / int8 约 25MB）
 node tools\fetch-model.mjs --out <模型目录> --variant fp32

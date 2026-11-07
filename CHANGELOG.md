@@ -3,6 +3,26 @@
 本仓的版本按**语义化版本**：改结论/改契约升主版本，加能力升次版本，修错别字与文档订正不升。
 英文摘要见每节末尾的 *English* 行。
 
+## v0.5.2 — 2026-11-08
+
+**纯文档订正**（不改一行代码、不改任何命令的缺省行为）：0.5.1 那张「命令一览」表的**「缺省是否动库」列写错了三行**。
+
+### 订正
+
+| 命令 | 0.5.1 写错成 | 实际（现改对） |
+| --- | --- | --- |
+| `dsh-mem-sync` | 干跑 | **会写**（写独立向量库；`--dry-run` 才一条不落盘） |
+| `dsh-mem-sweep` | 干跑 | **会写**（重编码写向量库；`--dry-run` 才不落盘） |
+| `dsh-mem-doc-index` | 干跑 `--dry-run` | **会写**（写索引库；`--dry-run` 才只算不写） |
+| `dsh-mem-pitfall-hook` | `--status` 只读 | 预演（`--status` 只读、`--run` 不带 `--apply` 不写） |
+
+**为什么必须发版而不是只改仓内文件**：这张表是给「刚装完、手上有一个生产 `memory.db`」的人看的。
+写成「干跑」会让人以为敲 `dsh-mem-sync` 只是算一算，**实际它会往向量库里写**。npm 不允许覆盖已发版本，所以走 0.5.2。
+
+同批：`memory-engine/README.md` 的「常用命令」段开头加了一句同样的提醒（那三条不给 `--dry-run` 就真写，别对着生产库试参数）。
+
+*English: docs-only fix. Three rows of the command table wrongly said the default was a dry run; `dsh-mem-sync` / `dsh-mem-sweep` / `dsh-mem-doc-index` write by default (they write the vector/index DB, not your memory DB). No code or default behaviour changed.*
+
 ## v0.5.1 — 2026-11-08
 
 **接线修正**：能力都在，但**用户摸不到**。这一版只接线、只改声明、只补文案 —— **一件能力都没撤，算法一行没动**。
