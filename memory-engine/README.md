@@ -22,8 +22,11 @@
 ```
 memory-engine/
 ├─ serve.mjs            编码桥（回环 HTTP，模型常驻）
-├─ cli/                 sync.mjs · sweep.mjs · recall.mjs · selfcheck.mjs ·
-│                       layer-migrate.mjs（加层字段）· layer-move.mjs（整层搬走/搬回）· band-sentinel.mjs（号段哨兵）
+├─ cli/                 15 个命令行入口（下面「常用命令」逐条列；装主包后前缀 dsh-mem-）：
+│                       sync · sweep · recall · selfcheck · serve-start ·
+│                       layer-migrate（加层字段）· layer-move（整层搬走/搬回）· band-sentinel（号段哨兵）·
+│                       doc-index · doc-index-rebuild · domain-tags · pitfall-hook ·
+│                       distill · distill-sessions · distill-rollback
 ├─ lib/                 config / vectors-store / memory-source / embedder / sync / sweep / recall /
 │                       lexicon-recall（词表第二路） / recall-log（旁路留痕） / selfcheck / cli-util / cli-strict / hashes /
 │                       layers（层配置 + 行指纹） / layer-migrate / layer-move / band-sentinel /
@@ -42,6 +45,33 @@ memory-engine/
 ├─ test/                单测（夹具全部落系统临时目录）+ run.mjs
 └─ bench/bench.mjs      V1 / V2 基准（方案 §9）
 ```
+
+## 命令怎么敲（0.5.1 起两种都行）
+
+**① 装了主包就敲短名**（`npm i -g @kira905/dsh-memory-toolkit`，19 条命令一起进 PATH）：
+
+```powershell
+dsh-mem-selfcheck --json
+dsh-mem-recall --query "退下吧" --json
+dsh-mem-layer-move --db <副本> --layer archival          # 干跑
+dsh-mem-band-sentinel --line
+```
+
+`bin` 声明在**主包** `package.json` 里（`./memory-engine/cli/*.mjs`）—— 子目录自己的 `bin` 不会被 npm 提升，所以别在 `memory-engine/package.json` 里找。
+每个 `cli/*.mjs` 首行都有 `#!/usr/bin/env node`（npm 靠它决定 shim 用哪个解释器；少了 shebang 的 shim 在 Windows 上会一声不响 rc 0 无输出 —— 这是 0.5.1 修掉的一个真坑）。
+
+**② 在本目录里也可以直接 node 跑**（本文下面所有示例都是这种写法，不依赖全局安装）：
+
+```powershell
+node cli\selfcheck.mjs --json
+```
+
+## 依赖与发布口径
+
+- **本子包不单独发布**：`package.json` 里 `"private": true`，随主包 `@kira905/dsh-memory-toolkit` 一起分发（主包 `files` 含 `memory-engine/`）。改目录里的 `version` 不影响任何已发布的包号。
+- **零硬依赖**：这里没有 `dependencies`。唯一声明的第三方包是 `@huggingface/transformers`，写在 **`optionalDependencies`** 里（只给本地 ONNX 编码用）。
+- **没装它不会静默降级**（实测）：`createLocalEmbedder` 里是 `await import('@huggingface/transformers')`，拿不到直接 `ERR_MODULE_NOT_FOUND`、rc=2。**能跑的三条路**：装它 / `--http-embedder`（走编码桥）/ `--stub-embedder`（零依赖哈希骨架，无语义质量）。
+- 想用本地编码：在本目录 `npm install` + `node tools\fetch-model.mjs --out <模型目录>`。
 
 ## 常用命令
 

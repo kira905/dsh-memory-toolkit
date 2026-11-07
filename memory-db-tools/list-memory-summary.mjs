@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import zlib from "node:zlib";

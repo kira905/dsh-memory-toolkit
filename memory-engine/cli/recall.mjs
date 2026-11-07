@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // 召回入口：向量召回 + FTS 补位 + 倒数排名融合，pinned 条目全程排除。
 // 这里只管参数整形与结果排版；召回算法在 ../lib/recall.mjs。
 //

@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // 号段哨兵入口：一条命令看「下一条新 id 会不会落到别人的号段里」。
 //
 //   node memory-engine/cli/band-sentinel.mjs                    # 单机缺省：只读本机库，只打印

@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // 软淘汰执行器入口：把一整层搬进本库的边表（不删），一条命令出去、一条命令回来。
 //
 //   node memory-engine/cli/layer-move.mjs --db <库> --layer archival                 干跑：说会搬几行

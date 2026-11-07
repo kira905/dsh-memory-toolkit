@@ -22,7 +22,8 @@
 >   --query <text>         直接给召回查询文本（缺省取会话上下文）
 > ```
 >
-> 三个 CLI 全部只读、不启服务。装法与自检见下方「装完自检」。
+> **19 条命令**随包发：4 条只读的 `dsh-memory-*`（体检 / 简报 / 导出 / 血缘）+ 15 条 `dsh-mem-*` 引擎命令行
+> （后者 **0.5.1** 才接上，此前只能 `node memory-engine/cli/<名>.mjs` 敲）。完整清单见下节「命令一览」。装法与自检见下方。
 
 > ### 它不附带什么（先看清楚，省得装完失望）
 >
@@ -35,7 +36,7 @@
 
 ---
 
-> **本仓装完即用**（0.1.3 起）：`dsh plugin --profile <profile> add @kira905/dsh-memory-toolkit` 一条命令，`dsh.bundle` 会让它自动挂进 profile 的组合列表，**不需要再手工写 `cordis.patch.yml`**。包内 3 个 CLI（`dsh-memory-audit` / `dsh-memory-summary` / `dsh-memory-export`）与挂载无关，`npm i -g` 或 `npx` 直接用。
+> **本仓装完即用**（0.1.3 起）：`dsh plugin --profile <profile> add @kira905/dsh-memory-toolkit` 一条命令，`dsh.bundle` 会让它自动挂进 profile 的组合列表，**不需要再手工写 `cordis.patch.yml`**。包内 **19 条命令**（4 条 `dsh-memory-*` + 15 条 `dsh-mem-*`）与挂载无关，`npm i -g` 或 `npx` 直接用 —— 清单见下节「命令一览」。
 
 ## 装完自检（三条只读验法）
 
@@ -60,6 +61,46 @@ Test-Path "$env:APPDATA\npm\dsh-memory-summary.CMD"                           # 
 
 > 探针只做存在性检查（只看命令文件在不在，不执行任何命令）。
 > 要不要用 `--help` 验，见本仓当前说明与该命令的参数表。
+
+## 命令一览（装完就能敲）
+
+`npm i -g @kira905/dsh-memory-toolkit` 之后，下面 19 条直接在 PATH 里（0.5.1 起；此前只有前 4 条）。
+
+**体检 / 简报（4 条 · 全部只读）**
+
+| 命令 | 干什么 |
+|---|---|
+| `dsh-memory-summary` | 新会话开工简报：设备行 + 记忆清单 + pinned 全文 |
+| `dsh-memory-audit` | persona ↔ 记忆 体检（正文体积 / 可见率） |
+| `dsh-memory-export` | 季度体检第 1 站：只读导出 `memory.db` → JSON |
+| `dsh-memory-lineage` | 血缘回填 / 覆盖率读数（`--report` 只读） |
+
+**记忆引擎（15 条 · 前缀 `dsh-mem-`，全部落在 `memory-engine/` 里）**
+
+| 命令 | 干什么 | 缺省是否动库 |
+|---|---|---|
+| `dsh-mem-selfcheck` | 启动自检：向量表 / schema / 编码器 / 维度 / hostId | 只读 |
+| `dsh-mem-sync` | 增量同步（`--dry-run` 只报计划） | 干跑 |
+| `dsh-mem-sweep` | 兜底轮转：按 id 段校验 `text_hash` | 干跑 |
+| `dsh-mem-recall` | 召回（向量 + FTS + 词表 + RRF），人工查验用 | 只读 |
+| `dsh-mem-serve-start` | 编码桥幂等启动（在跑就探活、不在跑才拉起） | 会起进程 |
+| `dsh-mem-doc-index` | 文档 → 索引库增量同步 | 干跑 `--dry-run` |
+| `dsh-mem-doc-index-rebuild` | 索引库逃生舱：重建 / 快照 / 回滚 | **会写** |
+| `dsh-mem-layer-migrate` | 加 `layer` 字段（动 schema 先备份） | 干跑 |
+| `dsh-mem-layer-move` | 软淘汰：整层搬进边表 / 搬回（不删） | 干跑 |
+| `dsh-mem-band-sentinel` | id 号段哨兵：下一条新 id 会不会落到别人号段 | 只读 |
+| `dsh-mem-domain-tags` | 记忆域标签补齐（须给 `--db`，无默认库） | 干跑 |
+| `dsh-mem-distill` | 窗口内记忆聚类 → 模型压成一条写回 | 干跑 |
+| `dsh-mem-distill-sessions` | 会话 `.jsonl` → 只抽可回指的结论句 | 干跑 |
+| `dsh-mem-distill-rollback` | 提炼产物按组 / 按 id 撤回（先快照再删） | 干跑 |
+| `dsh-mem-pitfall-hook` | 坑库向量钩子：置标记 / 看标记 / 消费标记 | `--status` 只读 |
+
+**三点注意**
+
+1. **`--help`**：上面 19 条里，`band-sentinel` / `distill` / `distill-rollback` / `distill-sessions` / `layer-migrate` / `layer-move` / `serve-start` 与 4 条 `dsh-memory-*` 有 `--help`，直接出用法。
+   其余几条（`selfcheck` / `sync` / `sweep` / `recall` / `doc-index*` / `domain-tags` / `pitfall-hook`）**没有 `--help` 分支**：敲了就按缺省语义跑（多为干跑），想先看参数请看对应源码头部注释或 `memory-engine/README.md` 的「常用命令」。
+2. **路径一律可注入**：`--memory-db` / `--vectors-db` / `--state-file` / `--docs-root` / `--dsh-home`，另有环境变量 `MEMORY_ENGINE_*` / `DOC_INDEX_*`。**别对着生产库干跑**，先用一份副本。
+3. **命令名为什么分两套前缀**：`dsh-memory-*` 是 0.1.x 就有的四个，改名字会打断已有脚本；`dsh-mem-*` 是 0.5.1 新接的 15 个，短前缀 + 与老的避开。两套并存不是笔误。
 
 ---
 
@@ -163,12 +204,52 @@ node memory-db-tools/memory-snapshot.mjs --selftest     # 12/12
 ⚠️ 归档根**没有缺省值**：必须给 `--removed-root`（或 `DSH_MEMORY_REMOVED_ROOT` / `DSH_ROOT`），且不许落在 home 下
 （归档里是正文全文，落进快照/备份的收集目录 = 一次备份就把正文搬出机）。
 
-### ⑤ 中文稀疏召回（`lexicon-recall.mjs` + `dict/`）
+### ⑤ 中文稀疏召回（`lexicon-recall.mjs` + `dict/` 那 1.2 MB）
 
 补上 hybrid search 里「稀疏」那一路：jieba 词表最长匹配切词 + 「库内 df 的 IDF × 通用词频稀有度」打分，
-与向量路一起喂 RRF 融合。开关与门槛读 `dsh-memory-local/lib/dict/lexicon-config.json`。
+与向量路一起喂 RRF 融合。
 
-词表来自 **jieba**（MIT），`dict/LICENSE-词典.md` 随包保留即合规（约 1.25 MB 数据，不需要可整目录删掉 ⇒ 自动 fail-open）。
+**⚠️ 开关文件有两份，别改错（它们不是同一个文件）**：
+
+| 谁在用 | 读哪份 | 出厂值 |
+|---|---|---|
+| `dsh-memory-local/lib/lexicon-recall.mjs`（插件侧，会话里召回那一路） | `dsh-memory-local/lib/dict/lexicon-config.json` | `lexiconEnabled: true`（开） |
+| `memory-engine/lib/lexicon-recall.mjs`（引擎侧，`dsh-mem-recall` 那一路） | `memory-engine/dict/lexicon-config.json` | `enabled: false`（关） |
+
+两份**词表数据文件（`词典.txt` / `词频.txt`）是同源的同一份内容**，各放一份是因为两边都用自己目录下的相对路径找素材
+（插件要能跟着自己的包走，引擎要能独立跑）。所以 tarball 里这 1.2 MB 数据实际算了**两份**。下面说 size 时按**单份**算。
+
+**`dict/` 里是什么**（单份合计 **1,223 KB**，四个文件都是纯数据）
+
+| 文件 | 大小 | 是什么 |
+|---|---|---|
+| `词典.txt` | 1,005 KB | jieba 词表，一行一个词；用来做最长匹配切词（FTS5 的 `unicode61` 不切中文，所以自带一份） |
+| `词频.txt` | 214 KB | 一行 `词 频次`；频次越大越生僻，越生僻越像检索线索（最常见的词过不了 `floor` 门限就被滤掉） |
+| `lexicon-config.json` | 725 B / 545 B | 开关与门槛。引擎侧字段 `enabled` / `topK` / `floor` / `ttlMs` / `k1`·`b`；插件侧字段 `lexiconEnabled` / `lexiconGate` / `lexiconTopK` / `ftsEnabled` / `lexiconTtlMs` |
+| `LICENSE-词典.md` | 2.7 KB | jieba（MIT）的许可与来源声明 —— **随包分发必须保留** |
+
+**为什么随包发**：装完即用。词表第二路要「库内 df × 通用词频」两边都现成才算得出来，缺任一边这一路就整条消失；
+放包里省掉「再去哪儿下一份词表」这一步，也免得用户自己找一份许可不明的词表。它们**不联网、不写盘、只在内存里建一次索引**（缓存 `ttlMs` 到期才重建）。
+
+**不想要怎么省**：想瘦身有三条路，都不改代码：
+
+```powershell
+# ① 整目录删掉：词表第二路自动 fail-open —— buildLexiconIndex 返回 null，这一路零命中，
+#    召回结果与「纯向量 + FTS」逐字一致；向量路与 FTS 路完全不受影响
+#    （两个位置各删一次，删哪边就省哪边，互不影响）
+Remove-Item <装到的位置>\@kira905\dsh-memory-toolkit\memory-engine\dict -Recurse
+Remove-Item <装到的位置>\@kira905\dsh-memory-toolkit\dsh-memory-local\lib\dict -Recurse
+
+# ② 换成自己的词表：指到别处，格式照上面两张表（`词典.txt` 一行一词 / `词频.txt` 一行「词 空格 频次」）
+$env:MEMORY_ENGINE_DICT_DIR = 'D:\my-lexicon'    # 引擎侧
+# 插件侧走 DICT_DIR 同目录约定：把它自己的 lib/dict/ 换成软链或替换内容
+
+# ③ 只想确认「值不值这体积」：这一路出厂是「插件侧开、引擎侧关」，
+#    当它不存在时召回完全正常（上面 ① 的 fail-open 就是证明）——它们不是召回的必要件
+```
+
+**许可**：`词典.txt` / `词频.txt` 来自 jieba 的 `extra_dict/dict.txt.small`（MIT），来源与署名见 `dict/LICENSE-词典.md`；
+按子树例外，`dict/` 保持上游 MIT（见文末「许可」）。
 
 ### ⑥ `memory-db-tools` 逐件判（30 件）
 
@@ -270,8 +351,10 @@ dsh-memory-lineage --report
 
 **词典体积与许可**：`词典.txt`（1,029,582 B）+ `词频.txt`（219,541 B）来自
 [jieba](https://github.com/fxsjy/jieba) 的 `extra_dict/dict.txt.small`（MIT），随包内嵌在
-`memory-engine/dict/`，合计约 **1.25 MB**（`npm pack --dry-run` 实测：整包 tarball **1.1 MB** / 解包 **2.8 MB** / **140** 个文件）。
-**为什么要内嵌**：不内嵌的话 `npm i` 完这一路直接不可用（要么首次运行去联网拉，要么用户自己找词典）。素材目录可用 `MEMORY_ENGINE_DICT_DIR` 指到别处（打包方嫌大可以把它们挪出包，代价是这一路默认不可用）。
+`memory-engine/dict/` 与 `dsh-memory-local/lib/dict/`（两处同源副本，各约 1.22 MB；
+`npm pack --dry-run` 现跑 0.5.1：整包 tarball **1,960,873 B ≈ 1.87 MB** / 解包 **4,614,716 B ≈ 4.40 MB** / **163** 个文件）。
+**为什么要内嵌**：不内嵌的话 `npm i` 完这一路直接不可用（要么首次运行去联网拉，要么用户自己找词典）。素材目录可用 `MEMORY_ENGINE_DICT_DIR` 指到别处；
+**不想要怎么省**（删掉即 fail-open、召回结果与没有它逐字一致）见上面「⑤ 中文稀疏召回」。
 
 许可按**子树优先**：`memory-engine/dict/` 保持上游 **MIT**（全文与版权声明见 [`dict/LICENSE-词典.md`](./memory-engine/dict/LICENSE-词典.md)），
 与仓级 AGPL-3.0 **不冲突** —— MIT 与 AGPL 兼容，分发时把那份版权声明原样带上即可（与本仓 `dsh-memory-local/` fork 的上游 MIT 同一口径）。
@@ -451,7 +534,36 @@ node cli/distill-sessions.mjs --source <会话.jsonl> --max-tokens 30000   # dry
 
 - **Node.js ≥ 22**（用到内置 `node:sqlite`，以及 ESM 顶层能力）
 - 平台：Windows / Linux / macOS 均可；路径默认值一律从**环境变量或当前工作目录**推导，不含任何写死的机器路径
-- `memory-engine/` 的**本地向量编码**额外需要 `@huggingface/transformers`（可选，见下）
+- **第三方运行时依赖：零硬依赖**。根包里没有 `dependencies`、没有 `peerDependencies`；`memory-engine/` 只把一个包声明成 `optionalDependencies`（`@huggingface/transformers`，见下）
+
+### 那个 optional 依赖是干什么的：`@huggingface/transformers`
+
+**它是「本地向量编码」用的**（ONNX 推理，`memory-engine/lib/embedder.mjs`）。只影响 `memory-engine/` 里那几条要**把正文变成向量**的命令（`sync` / `sweep` / `recall` / `distill` / `selfcheck` / `serve*`），体检工具链（`dsh-memory-*` 四条）**完全不需要它**。
+
+**没装会怎样（实测，别猜）**：直接报错退出，不会静默降级 ——
+
+```text
+❌ Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@huggingface/transformers'
+   imported from .../memory-engine/lib/embedder.mjs        rc=2
+```
+
+因为它是 `await import()` 动态引入的（`embedder.mjs:155`），代码里没有 try/catch 兜底。
+
+**三条路，挑一条**：
+
+| 走法 | 怎么做 | 代价 |
+|---|---|---|
+| ① 装上（推荐，真语义） | `cd memory-engine && npm install`（约 300+ MB），再 `node tools/fetch-model.mjs --out <模型目录>` 取权重（fp32 90 MB / int8 约 25 MB） | 占盘、首次加载慢 |
+| ② 走编码桥 `--http-embedder` | 别处（另一台机 / 另一个进程）跑 `dsh-mem-serve-start`，这边只发 `POST /encode` | 要有个常驻桥，召回受网络影响 |
+| ③ 走哈希骨架 `--stub-embedder` | 加这个开关即可，**零依赖** | 确定性哈希、**没有语义质量**，只够跑通链路与单测 |
+
+**为什么它不写成 `dependencies`**：① 只在「你要本地编码」这一种场景才需要；② 300+ MB 不该让只用体检工具的人被动承担；③ 声明成 `optionalDependencies` 时 `npm install` 会尝试装、失败也不阻塞整个安装。
+
+### `memory-engine/` 是子包，不单独发布
+
+`memory-engine/package.json` 里 `"private": true` 且**没有独立版本发布**：它随主包 `@kira905/dsh-memory-toolkit` 一起分发（主包 `files` 含 `memory-engine/`）。
+所以那 15 条引擎命令的 `bin` 声明**在主包 `package.json` 里**（子目录里的 `bin` 不会被 npm 提升 —— 实测：装一个 `files` 里含子包的包，只会生成父包的 `bin`，子包 `bin` 一个都不生成）。
+同理：你在 `memory-engine/` 里 `npm install` 是给**这份解包出来的副本**装依赖，不是发个新包。
 
 ## 三、安装
 
@@ -461,14 +573,15 @@ cd dsh-memory-toolkit
 npm install          # 本仓根包零运行时依赖，此步只装元数据
 ```
 
-要跑**本地向量编码**（`memory-engine` 的 ONNX 路径），再装它自己的依赖：
+要跑**本地向量编码**（`memory-engine` 的 ONNX 路径），再装它自己的可选依赖：
 
 ```bash
 cd memory-engine
-npm install          # 会拉 @huggingface/transformers（较大，约 300+ MB）
+npm install          # 会拉 @huggingface/transformers（可选，约 300+ MB；失败也不影响命令行起得来）
+cd ..
 ```
 
-不想装这个依赖也可以：引擎的召回支持**HTTP 编码桥**（见下），以及纯 FTS5 的降级路径。
+`npm i -g @kira905/dsh-memory-toolkit` 装的是**主包**：`optionalDependencies` 只在 `memory-engine/package.json` 里，所以全局装**不会**顺带拉那 300 MB —— 想用本地编码就按上面进目录装一次。不想装也没关系：上面「三条路」里的 ② 和 ③ 随时可用。
 
 ## 四、快速开始（命令可直接照抄）
 
@@ -482,9 +595,13 @@ node persona-memory-audit.mjs --help
 # ③ 新会话开工简报（只读：设备行 + 记忆清单 + pinned 全文）
 node memory-db-tools/list-memory-summary.mjs --help
 
-# ④ 记忆引擎的启动自检（需要先在 memory-engine/ 内 npm install）
+# ④ 记忆引擎的启动自检（需要先在 memory-engine/ 内 npm install；
+#    不想装那 300 MB 就加 --stub-embedder，用零依赖哈希骨架把链路跑通）
 cd memory-engine && node cli/selfcheck.mjs --json
 ```
+
+装了主包（`npm i -g`）的话，上面这四条直接敲短名：`dsh-memory-export --help` / `dsh-memory-audit --help` /
+`dsh-memory-summary --help` / `dsh-mem-selfcheck --json`。
 
 一次典型的**季度记忆库体检**（全部只读，产物落你指定的目录）：
 

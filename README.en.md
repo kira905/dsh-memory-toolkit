@@ -22,7 +22,9 @@
 >   --query <text>          explicit recall query (default: current session context)
 > ```
 >
-> All three CLIs are read-only and start no service. Install steps and self-checks are below.
+> **19 commands** ship with this package — 4 read-only `dsh-memory-*` (audit / briefing / export / lineage)
+> and 15 `dsh-mem-*` engine CLIs (wired up in **0.5.1**; before that they were only reachable as
+> `node memory-engine/cli/<name>.mjs`). Full list below §4. Install steps and self-checks are above.
 
 ---
 
@@ -130,10 +132,16 @@ default changed.**
   from behaviour, proven equivalent by fixtures and a before/after diff — not by matching sha256.
 
 **Dictionary size and licence.** `词典.txt` (1,029,582 B) + `词频.txt` (219,541 B) come from
-[jieba](https://github.com/fxsjy/jieba) `extra_dict/dict.txt.small` (MIT) and are bundled under
-`memory-engine/dict/`, about **1.25 MB** in total (`npm pack --dry-run`: tarball **1.1 MB**, unpacked
-**2.8 MB**, **140** files). They are bundled because otherwise the feature is unusable right after
-`npm i`; `MEMORY_ENGINE_DICT_DIR` can point the assets elsewhere if a packager wants them out of the tarball.
+[jieba](https://github.com/fxsjy/jieba) `extra_dict/dict.txt.small` (MIT) and are bundled **twice**, under
+`memory-engine/dict/` (engine side) and `dsh-memory-local/lib/dict/` (plugin side) — same bytes, one copy each,
+because both sides resolve their assets relative to their own directory. Single copy is about **1.22 MB**;
+as published in 0.5.1, `npm pack --dry-run` reports tarball **1,960,873 B ≈ 1.87 MB**, unpacked
+**4,614,716 B ≈ 4.40 MB**, **163** files.
+
+They are bundled because otherwise the feature is unusable right after `npm i`. **To slim the package down**
+(no code change needed): delete either or both `dict/` directories — the second recall path then fails open
+(`buildLexiconIndex` returns `null`, zero hits, recall results byte-identical to vector + FTS only). Or point
+`MEMORY_ENGINE_DICT_DIR` at your own dictionary (`词典.txt`: one word per line; `词频.txt`: `word<space>freq`).
 
 Licensing follows **subtree precedence**: `memory-engine/dict/` keeps the upstream **MIT** licence (full text
 and copyright notice in [`dict/LICENSE-词典.md`](./memory-engine/dict/LICENSE-词典.md)), which does **not**
@@ -309,7 +317,42 @@ node cli/distill-sessions.mjs --source <session.jsonl> --max-tokens 30000   # dr
 - **Node.js ≥ 22** (built-in `node:sqlite`, ESM)
 - Windows / Linux / macOS. Every default path is derived from **environment variables or the current
   working directory** — there are no hard-coded machine paths in this repo
-- Local vector encoding in `memory-engine/` additionally needs `@huggingface/transformers` (optional)
+- **Zero hard third-party runtime dependencies.** The root package has no `dependencies` and no
+  `peerDependencies`; `memory-engine/` declares exactly one package as `optionalDependencies`
+  (`@huggingface/transformers`)
+
+### The optional dependency: `@huggingface/transformers`
+
+It powers **local vector encoding** (ONNX, `memory-engine/lib/embedder.mjs`). It only affects the engine
+commands that turn text into vectors (`sync` / `sweep` / `recall` / `distill` / `selfcheck` / `serve*`); the
+four `dsh-memory-*` audit CLIs do not need it at all.
+
+**If it is missing, the command fails — it does not silently degrade** (measured):
+
+```text
+❌ Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@huggingface/transformers'
+   imported from .../memory-engine/lib/embedder.mjs        rc=2
+```
+
+The import is dynamic (`embedder.mjs:155`) and there is no try/catch around it. Three ways to proceed:
+
+| Option | How | Cost |
+|---|---|---|
+| ① Install it (real semantics) | `cd memory-engine && npm install` (~300+ MB), then `node tools/fetch-model.mjs --out <dir>` (fp32 90 MB / int8 ~25 MB) | disk, slow first load |
+| ② HTTP bridge `--http-embedder` | run `dsh-mem-serve-start` elsewhere, this side just `POST /encode` | needs a live bridge |
+| ③ Hash stub `--stub-embedder` | add the flag, **zero dependencies** | deterministic hash, **no semantic quality** — fine for wiring and unit tests only |
+
+**Why not `dependencies`**: it is only needed for local encoding; 300+ MB should not be forced on people who
+just want the audit CLIs; and as an optional dependency a failed install does not block the package.
+
+### `memory-engine/` is a sub-package and is never published on its own
+
+`memory-engine/package.json` has `"private": true` and no version of its own: it ships **inside** the main
+package (the main package's `files` includes `memory-engine/`). The `bin` entries for those 15 CLIs therefore
+live in the **root** `package.json` — a `bin` field in a nested directory is **not** hoisted by npm (measured:
+installing a package whose `files` includes a sub-package produces only the parent's `bin`, none from the
+sub-package). Running `npm install` inside `memory-engine/` installs dependencies for that unpacked copy; it
+does not publish anything.
 
 ## 3. Install
 
@@ -323,12 +366,50 @@ For local ONNX vector encoding (optional):
 
 ```bash
 cd memory-engine
-npm install          # pulls @huggingface/transformers (large, 300+ MB)
+npm install          # pulls @huggingface/transformers (optional, ~300+ MB; a failure does not break the CLIs)
+cd ..
 ```
 
-You can skip it entirely: the engine also supports an HTTP encoding bridge and a pure FTS5 fallback path.
+`npm i -g @kira905/dsh-memory-toolkit` installs the **main** package: the `optionalDependencies` entry lives in
+`memory-engine/package.json`, so a global install does **not** pull those 300 MB. Skip it if you only need the
+audit CLIs; options ② and ③ above remain available.
 
 ## 4. Quick start
+
+### Commands on your PATH (0.5.1+)
+
+`npm i -g @kira905/dsh-memory-toolkit` puts **19** commands on PATH.
+
+| Command | What it does | Touches the DB by default? |
+|---|---|---|
+| `dsh-memory-summary` | New-session briefing: device line + memory list + pinned text | read-only |
+| `dsh-memory-audit` | Persona ↔ memory audit (size / visibility) | read-only |
+| `dsh-memory-export` | Quarterly audit step 1: read-only `memory.db` → JSON | read-only |
+| `dsh-memory-lineage` | Provenance backfill / coverage readout (`--report` is read-only) | dry-run |
+| `dsh-mem-selfcheck` | Startup self-check: vector table / schema / encoder / dim / hostId | read-only |
+| `dsh-mem-sync` | Incremental sync (`--dry-run` plans only) | dry-run |
+| `dsh-mem-sweep` | Hash sweep: verify `text_hash` segment by segment | dry-run |
+| `dsh-mem-recall` | Recall (vector + FTS + lexicon + RRF), manual inspection | read-only |
+| `dsh-mem-serve-start` | Idempotent encoding-bridge launcher | starts a process |
+| `dsh-mem-doc-index` | Documents → index DB incremental sync | dry-run with `--dry-run` |
+| `dsh-mem-doc-index-rebuild` | Index escape hatch: rebuild / snapshots / restore | **writes** |
+| `dsh-mem-layer-migrate` | Add the `layer` column (back up first) | dry-run |
+| `dsh-mem-layer-move` | Soft eviction: move a whole layer out / back (never deletes) | dry-run |
+| `dsh-mem-band-sentinel` | id-band sentinel: will the next id land in someone else's band | read-only |
+| `dsh-mem-domain-tags` | Domain-tag backfill (requires `--db`; no default library) | dry-run |
+| `dsh-mem-distill` | Cluster recent memories → model compresses to one entry | dry-run |
+| `dsh-mem-distill-sessions` | Session `.jsonl` → only conclusions that can cite their source | dry-run |
+| `dsh-mem-distill-rollback` | Revert distilled entries by group / id (snapshot first) | dry-run |
+| `dsh-mem-pitfall-hook` | Pitfall-library vector hook: set / inspect / consume the marker | `--status` read-only |
+
+**Notes.** (a) `--help` works on `band-sentinel` / `distill` / `distill-rollback` / `distill-sessions` /
+`layer-migrate` / `layer-move` / `serve-start` and the four `dsh-memory-*`; the rest (`selfcheck` / `sync` /
+`sweep` / `recall` / `doc-index*` / `domain-tags` / `pitfall-hook`) have no `--help` branch — they just run
+their default (mostly dry-run) behaviour; read the header comment or `memory-engine/README.md`.
+(b) Every path is injectable (`--memory-db` / `--vectors-db` / `--state-file` / `--docs-root` / `--dsh-home`,
+plus `MEMORY_ENGINE_*` / `DOC_INDEX_*`) — **never point them at your production DB**; use a copy.
+(c) The two prefixes are deliberate: `dsh-memory-*` existed since 0.1.x and renaming would break existing
+scripts; `dsh-mem-*` is the 15 engine CLIs wired up in 0.5.1.
 
 ```bash
 # ① Toolkit usage and options (zero side effects)
@@ -340,7 +421,8 @@ node persona-memory-audit.mjs --help
 # ③ New-session briefing (read-only)
 node memory-db-tools/list-memory-summary.mjs --help
 
-# ④ Engine startup self-check (run npm install inside memory-engine/ first)
+# ④ Engine startup self-check (run npm install inside memory-engine/ first;
+#    or add --stub-embedder to skip the ONNX dependency entirely)
 cd memory-engine && node cli/selfcheck.mjs --json
 ```
 

@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // 给记忆库加 `layer` 字段的入口。默认 dry-run；动 schema 必须先备份。
 //
 //   node memory-engine/cli/layer-migrate.mjs                                  # 干跑：只说会做什么

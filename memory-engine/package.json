@@ -16,7 +16,7 @@
     "serve": "node serve.mjs",
     "bench": "node bench/bench.mjs"
   },
-  "dependencies": {
+  "optionalDependencies": {
     "@huggingface/transformers": "^3.5.2"
   }
 }

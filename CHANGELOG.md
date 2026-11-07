@@ -3,6 +3,72 @@
 本仓的版本按**语义化版本**：改结论/改契约升主版本，加能力升次版本，修错别字与文档订正不升。
 英文摘要见每节末尾的 *English* 行。
 
+## v0.5.1 — 2026-11-08
+
+**接线修正**：能力都在，但**用户摸不到**。这一版只接线、只改声明、只补文案 —— **一件能力都没撤，算法一行没动**。
+
+### ① 15 条引擎命令接上 `bin`（前缀 `dsh-mem-`）
+
+`memory-engine/cli/` 下一直有 15 个命令行，但主包 `package.json` 里只有 4 条 `bin` ⇒ 装完全球之后
+只能 `node <装到哪>/memory-engine/cli/<名>.mjs` 敲。这一版补齐：
+
+| 命令 | 脚本 |
+| --- | --- |
+| `dsh-mem-band-sentinel` | `memory-engine/cli/band-sentinel.mjs` |
+| `dsh-mem-distill` | `memory-engine/cli/distill.mjs` |
+| `dsh-mem-distill-rollback` | `memory-engine/cli/distill-rollback.mjs` |
+| `dsh-mem-distill-sessions` | `memory-engine/cli/distill-sessions.mjs` |
+| `dsh-mem-doc-index` | `memory-engine/cli/doc-index.mjs` |
+| `dsh-mem-doc-index-rebuild` | `memory-engine/cli/doc-index-rebuild.mjs` |
+| `dsh-mem-domain-tags` | `memory-engine/cli/domain-tags.mjs` |
+| `dsh-mem-layer-migrate` | `memory-engine/cli/layer-migrate.mjs` |
+| `dsh-mem-layer-move` | `memory-engine/cli/layer-move.mjs` |
+| `dsh-mem-pitfall-hook` | `memory-engine/cli/pitfall-hook.mjs` |
+| `dsh-mem-recall` | `memory-engine/cli/recall.mjs` |
+| `dsh-mem-selfcheck` | `memory-engine/cli/selfcheck.mjs` |
+| `dsh-mem-serve-start` | `memory-engine/cli/serve-start.mjs` |
+| `dsh-mem-sweep` | `memory-engine/cli/sweep.mjs` |
+| `dsh-mem-sync` | `memory-engine/cli/sync.mjs` |
+
+- **为什么写在主包 `bin` 而不是子包**：`memory-engine/` 是子包（`private: true`，随主包 `files` 分发）。
+  子目录里的 `bin` **不会被 npm 提升** —— 实测：造一个 `files` 含子包的父包装到隔离前缀，只生成父包那一条命令，
+  子包的 `bin` 一条都没生成。所以 15 条与原有 4 条并列写在**根** `package.json`。
+- **顺带修掉一个真坑**：已发的 `dsh-memory-summary` **一直是坏的** —— `memory-db-tools/list-memory-summary.mjs`
+  缺 `#!/usr/bin/env node`，npm 生成 shim 时没有解释器可挂，Windows 上直接执行 `.mjs` 会一声不响 rc 0 无输出。
+  本次给 **13** 个缺 shebang 的脚本补齐（12 个 `memory-engine/cli/*` + `list-memory-summary.mjs`）。
+- **判据（真装一次、逐条跑，不是看文件在不在）**：15 条全部有输出；11 条 `rc=0`（7 条 `--help` 出用法、
+  4 条干跑 / 只读跑完），4 条 `rc=2` 是脚本**自己的正常报错**（缺 `--db` / 记忆库不存在），不是「命令不存在」。
+
+### ② 依赖声明改成 `optionalDependencies`，并把真实行为写清
+
+`memory-engine/package.json` 的 `@huggingface/transformers` 从 `dependencies` 移到 **`optionalDependencies`**：
+它只给本地 ONNX 编码用，不该让只用体检工具的人被动承担 300+ MB。
+
+**口径订正（实测，别照抄旧说法）**：**没装它不会静默退化成哈希** —— `createLocalEmbedder` 里是
+`await import('@huggingface/transformers')`（`embedder.mjs:155`）、没有 try/catch，拿不到直接
+`ERR_MODULE_NOT_FOUND` / rc=2。能跑的三条路：装它 / `--http-embedder`（编码桥）/ `--stub-embedder`（零依赖哈希骨架，无语义质量）。
+`--stub-embedder` 已实测跑通（`dsh-mem-selfcheck` 出 `ok: true`、`dsh-mem-sync --dry-run` 扫到 2 条）。
+
+**根包仍是「零第三方运行时依赖」**：根 `package.json` 无 `dependencies`、无 `peerDependencies`，改完仍成立
+（`optionalDependencies` 只写在子包，不算硬依赖）。
+
+### ③ `dict/` 那 1.2 MB 在 README 里说清
+
+仍随包发（装完即用），但补了「它是什么 / 为什么随包发 / 不想要怎么省」：
+- 是什么：`词典.txt`（1,005 KB，jieba 词表，最长匹配切词）+ `词频.txt`（214 KB，`词 频次`）+ 开关 + 许可。
+- **包里其实有**两份**同源副本**（`memory-engine/dict/` 与 `dsh-memory-local/lib/dict/`，各约 1.22 MB），
+  因为两边都按自己目录的相对路径找素材；两份 `lexicon-config.json` **不是同一个文件**（引擎侧 `enabled`、插件侧 `lexiconEnabled`），README 里列表说清免得改错。
+- 不想要怎么省：删掉 `dict/` 即 fail-open（`buildLexiconIndex` 返回 `null`、这一路零命中、召回结果与纯向量 + FTS **逐字一致**），
+  或用 `MEMORY_ENGINE_DICT_DIR` 换自己的词表。
+
+### ④ 文档
+
+`README.md` / `README.en.md` / `memory-engine/README.md` 三份同步：新增「命令一览」（19 条逐条列出、标注缺省是否动库）、
+安装段的「三条路」、`memory-engine` 作为子包的发布口径、以及刷新过的体积读数
+（`npm pack --dry-run` 现跑：tarball **1,960,873 B** / 解包 **4,614,716 B** / **163** 个文件）。
+
+*English: wiring only — 15 engine CLIs now ship as `dsh-mem-*` bins (a nested package's `bin` is never hoisted by npm, measured), plus 13 missing shebangs fixed (the shipped `dsh-memory-summary` had been silently broken on Windows). `@huggingface/transformers` moved to `optionalDependencies`; docs now state the measured truth that a missing install fails with `ERR_MODULE_NOT_FOUND` rather than degrading silently. No algorithm or default behaviour changed.*
+
 ## v0.5.0 — 2026-11-08
 
 **会话捕获管线**（`capture` 系列）+ 三个只读探针。这一版补的是「**从你自己的会话日志里挑出该记的句子**」

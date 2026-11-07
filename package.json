@@ -1,6 +1,6 @@
 {
   "name": "@kira905/dsh-memory-toolkit",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": false,
   "publishConfig": {
     "access": "public"
@@ -45,7 +45,22 @@
     "dsh-memory-audit": "./persona-memory-audit.mjs",
     "dsh-memory-summary": "./memory-db-tools/list-memory-summary.mjs",
     "dsh-memory-export": "./memory-db-tools/audit-export.mjs",
-    "dsh-memory-lineage": "./dsh-memory-local/lib/lineage-backfill.mjs"
+    "dsh-memory-lineage": "./dsh-memory-local/lib/lineage-backfill.mjs",
+    "dsh-mem-band-sentinel": "./memory-engine/cli/band-sentinel.mjs",
+    "dsh-mem-distill": "./memory-engine/cli/distill.mjs",
+    "dsh-mem-distill-rollback": "./memory-engine/cli/distill-rollback.mjs",
+    "dsh-mem-distill-sessions": "./memory-engine/cli/distill-sessions.mjs",
+    "dsh-mem-doc-index": "./memory-engine/cli/doc-index.mjs",
+    "dsh-mem-doc-index-rebuild": "./memory-engine/cli/doc-index-rebuild.mjs",
+    "dsh-mem-domain-tags": "./memory-engine/cli/domain-tags.mjs",
+    "dsh-mem-layer-migrate": "./memory-engine/cli/layer-migrate.mjs",
+    "dsh-mem-layer-move": "./memory-engine/cli/layer-move.mjs",
+    "dsh-mem-pitfall-hook": "./memory-engine/cli/pitfall-hook.mjs",
+    "dsh-mem-recall": "./memory-engine/cli/recall.mjs",
+    "dsh-mem-selfcheck": "./memory-engine/cli/selfcheck.mjs",
+    "dsh-mem-serve-start": "./memory-engine/cli/serve-start.mjs",
+    "dsh-mem-sweep": "./memory-engine/cli/sweep.mjs",
+    "dsh-mem-sync": "./memory-engine/cli/sync.mjs"
   },
   "files": [
     "cordis.patch.yml",
