@@ -26,11 +26,19 @@ memory-engine/
 │                       layer-migrate.mjs（加层字段）· layer-move.mjs（整层搬走/搬回）· band-sentinel.mjs（号段哨兵）
 ├─ lib/                 config / vectors-store / memory-source / embedder / sync / sweep / recall /
 │                       lexicon-recall（词表第二路） / recall-log（旁路留痕） / selfcheck / cli-util / cli-strict / hashes /
-│                       layers（层配置 + 行指纹） / layer-migrate / layer-move / band-sentinel
+│                       layers（层配置 + 行指纹） / layer-migrate / layer-move / band-sentinel /
+│                       session-source（抽句）/ session-distill（模型合成）/ session-capture（会话目录提取）/
+│                       capture-judge（什么该记）/ capture-ledger（账本）
+├─ shadow-capture.mjs    会话候选·影子（只出候选，--apply 直接拒）
+├─ rollback-capture.mjs  会话候选·批次撤回（降层 + 作废，不物理删）
+├─ classify-memories.mjs 记忆分类（坑/口径/偏好/进度/过时）
+├─ profile-recall.mjs    召回耗时读数
+├─ event-loop-lag-probe.mjs  事件循环阻塞的外部探测
+├─ add-memory.mjs        按 spec.json 往库里插一条记忆
 ├─ config/              layers.json（层名集合 / 列名 / 缺省层） · bands.json（号段表）
 ├─ dict/                词表素材：词典.txt · 词频.txt（jieba · MIT） · LICENSE-词典.md · lexicon-config.json（开关）
 ├─ tools/               fetch-model.mjs（模型权重）· bridge-smoke.mjs · smoke-recall.mjs
-│                       verify-recall-chain.mjs（召回链验收夹具，自带判据）
+│                       verify-recall-chain.mjs（召回链验收夹具，自带判据）· nl-recall-probe.mjs（召回命中率探针）
 ├─ test/                单测（夹具全部落系统临时目录）+ run.mjs
 └─ bench/bench.mjs      V1 / V2 基准（方案 §9）
 ```

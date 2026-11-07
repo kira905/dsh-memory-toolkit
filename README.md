@@ -75,11 +75,11 @@ Test-Path "$env:APPDATA\npm\dsh-memory-summary.CMD"                           # 
 
 | 目录 | 是什么 | 形态 |
 |---|---|---|
-| [`memory-engine/`](./memory-engine/README.md) | 记忆引擎（离线层）：独立矢量库 · 增量同步 · 兜底 hash 轮转 · 混合召回（向量 + FTS5 + 词表 BM25 + RRF + 编码降级兜底 + 旁路留痕） · 文档索引 · 启动自检 · 本地编码桥 | 纯 Node ESM + `node:sqlite` |
+| [`memory-engine/`](./memory-engine/README.md) | 记忆引擎（离线层）：独立矢量库 · 增量同步 · 兜底 hash 轮转 · 混合召回（向量 + FTS5 + 词表 BM25 + RRF + 编码降级兜底 + 旁路留痕） · 文档索引 · 启动自检 · 本地编码桥 · **会话捕获管线**（会话日志 → 候选 → 账本 → 撤回） | 纯 Node ESM + `node:sqlite` |
 | [`memory-db-tools/`](./memory-db-tools/README.md) | 记忆库工具集：只读导出 / 六项体检分析 / 结构探针 / 特征词探针 / 与 persona 的重合度 / 看板账本只读探针 / 零改动自证 / 新会话开工简报 | 一组独立 CLI |
 | [`dsh-memory-local/`](./dsh-memory-local/README.md) | 本地记忆插件：上游 `dsh-memory` 的自持 fork（跨会话持久记忆 + 召回提示段 + 指针注入链）+ 写侧三件（删留痕 / 血缘预埋 / 血缘回填），带构建 / 幂等部署 / 一键回滚 / 部署后自检 | DSH 插件 |
 | [`persona-memory-audit.mjs`](./persona-memory-audit.mjs) | persona ↔ 记忆体检：把「persona 正文体积」与「记忆可见率」两项指标固定下来，超阈值即报红 | 单文件 CLI |
-| [`lib/`](./lib) | 四件共用的无依赖小件（参数白名单 / HTTP 存活判据 / zstd 帧解析 / 会话文件名 / 坑库打分） | 纯函数模块 |
+| [`lib/`](./lib) | 共用的无依赖小件（参数白名单 / HTTP 存活判据 / zstd 帧解析 / 会话文件名 / 坑库打分 / 部署守卫 / 文本相似度） | 纯函数模块 |
 
 ## 同源说明
 
@@ -345,6 +345,35 @@ node cli/layer-migrate.mjs --help
 node cli/layer-move.mjs --help
 node cli/band-sentinel.mjs --help
 ```
+
+## 会话捕获管线：从自己的会话历史里挑候选（0.5.0 新增）
+
+上一节讲的是「一份日志 → 结论条」。这一节的输入不一样：**DSH 自己的会话目录**。
+
+```
+<DSH 根>/sessions/<桶>/session-<id>/session*.jsonl.zstd
+```
+
+四个环节，各管一段，**全链路只出候选、永不写库**：
+
+| 环节 | 件 | 干什么 |
+| --- | --- | --- |
+| 提取 | `memory-engine/lib/session-capture.mjs` | 多帧 zstd 逐帧解 → 白名单事件（只 `user/message` / `assistant/message`）→ 按 `data.source.kind` **剔掉 7 种注入**（注入块长得像真人说话，只靠文本猜会漏）→ 末 N 轮 + 三道上限截断 |
+| 判定 | `memory-engine/lib/capture-judge.mjs` | 「什么该记」：决定/口径/修复句进来，寒暄、疑问、过程叙述、推测、工具回显出去；密钥、私网 IP、凭据路径一律剔。判定版本见 `judgeVersion` |
+| 账本 | `memory-engine/lib/capture-ledger.mjs` | 已判过的内容哈希（跨会话同文也挡）+ 每会话游标（只前进）+ 当日成本 + 每轮 run 记录。原子写、留 `.bak`、坏账本 fail-closed |
+| 影子 / 撤回 | `memory-engine/shadow-capture.mjs` · `rollback-capture.mjs` | 影子只落 `candidates.jsonl`（`--apply` 直接拒）；撤回器把某批降层 + 标记作废（不物理删），命中行不带 `capture:*` 标签就整批拒动 |
+
+跑一轮（不动库）：
+
+```bash
+node memory-engine/shadow-capture.mjs --home <DSH 根> --window-days 7 --min-age-hours 12 --out ./候选
+```
+
+`--min-age-hours` 是给"还在写的会话"用的：缺省不开，建议 12（闸掉半截日志）。
+
+判据夹具：`node memory-engine/test/run.mjs 14-session-capture`（28 项，夹具落系统临时区，零生产接触）。
+
+判定器改了任何规则 ⇒ 同批升 `judgeVersion`，并在 `lib/capture-judge.mjs` 顶部把改因写一句。
 
 ## 会话日志 → 记忆：提炼的边界（0.2.0 新增）
 

@@ -3,6 +3,61 @@
 本仓的版本按**语义化版本**：改结论/改契约升主版本，加能力升次版本，修错别字与文档订正不升。
 英文摘要见每节末尾的 *English* 行。
 
+## v0.5.0 — 2026-11-08
+
+**会话捕获管线**（`capture` 系列）+ 三个只读探针。这一版补的是「**从你自己的会话日志里挑出该记的句子**」
+这条链路：读会话目录 → 按白名单取事件 → 剔掉注入 → 判「什么该记」→ 出候选 → 账本去重 → 分批撤回。
+全链路**只出候选、不写库**（写不写、写哪条，仍由你决定）。
+
+### ① 捕获管线（`memory-engine/`）
+
+| 件 | 干什么 |
+| --- | --- |
+| `lib/session-capture.mjs` | 读 `<DSH 根>/sessions/` 下的会话日志（多帧 zstd 逐帧解）→ 白名单事件（只 `user/message` + `assistant/message`）→ 按 `data.source.kind` **剔掉 7 种注入** → 末 N 轮 + 三道上限截断 |
+| `lib/capture-judge.mjs` | 「什么该记」判定器（`judgeVersion = U1-1`）：分档打分、剔敏感（密钥/私网 IP/凭据路径）、剔寒暄与工具回显，给出候选与理由 |
+| `lib/capture-ledger.mjs` | 账本：已判过的内容哈希、每会话游标（只前进）、当日成本、每轮 run 记录。原子写 + `.bak` + 坏账本 fail-closed |
+| `shadow-capture.mjs` | **影子**入口：跑一轮只落 `candidates.jsonl` / `candidates.md`，`--apply` 直接拒（rc=2）—— 设计上永不写库 |
+| `rollback-capture.mjs` | 撤回器：把某一批落库的条**降层 + 标记作废**（不物理删）。三种粒度 `--tag` / `--run` / `--id`，命中行不带 `capture:*` 标签就整批拒动 |
+
+判据夹具：`memory-engine/test/14-session-capture.test.mjs`（28 项，覆盖「注入不进候选、真 user 能出候选」、
+账本幂等、游标不回退、坏账本 fail-closed）。跑法：`node memory-engine/test/run.mjs 14-session-capture`。
+**零生产接触**：夹具根落系统临时区，不读 `~/.dsh`、不写库、不联网。
+
+### ② 相似度算法收敛（`lib/text-similarity.mjs`）
+
+`normalizeText` / `shingles` / `jaccard` + 阈值表抽成一件纯函数模块（零 IO），候选去重与近重复判定共用。
+改阈值 = 改判定行为，请同批升 `judgeVersion`。
+
+### ③ 三个只读探针
+
+- `memory-engine/classify-memories.mjs` —— 给库里的记忆按「坑 / 口径 / 偏好 / 进度 / 过时」分类（缺省 dry-run，
+  `--apply` 才写旁挂，`--rollback` 回滚）。规则表在代码里明写，词表可自行增补。
+- `memory-engine/profile-recall.mjs` —— 召回耗时的分段读数（只读）。
+- `memory-engine/tools/nl-recall-probe.mjs` —— 召回判据探针：给一批「问题 → 期望 id」，看命中位次与命中率（只读）。
+- `memory-engine/event-loop-lag-probe.mjs` —— 事件循环阻塞的外部探测（对宿主反复打请求量延迟，判断是否有长同步卡住）。
+- `memory-engine/add-memory.mjs` —— 小工具：按 `spec.json` 往库里插一条记忆（`ownerUser` 缺省取当前系统用户）。
+
+### ④ 与 `session-source` / `session-distill` 的分工（别混）
+
+本仓有两套「会话 → 记忆」的路径，**不是重复实现**，输入边界不同：
+
+- `lib/session-source.mjs` + `lib/session-distill.mjs`：吃**一份纯文本 `.jsonl`**（或 `.jsonl.zstd`），抽结论句，
+  **配了每日预算才调模型**合成，写库带 `distilled` 前缀 + 回指 refs。适合「把一段日志提炼成结论」。
+- 本版 `capture` 系列：吃 **DSH 自己的会话目录**（`<DSH 根>/sessions/<桶>/session-*/`），认 DSH 的事件结构与
+  注入 kind，**零模型调用**（纯规则判定），只出候选、供人或下游决定。适合「在我自己的历史会话语料上筛该记的」。
+
+两者可以叠加：capture 出候选 → 你挑几条 → 用 distill 的预算链写入。
+
+### ⑤ 没随本版发布的件（说明理由，不是漏）
+
+- 号段哨兵的**多机版**（写死三台主机名 + ssh 别名）：本仓已有一套**配置驱动、单机自动退化**的实现
+  （`lib/band-sentinel.mjs` + `cli/band-sentinel.mjs`），再放一份写死主机的会变成第二份实现 ⇒ 不纳入。
+- 两件一次性事故诊断/回滚脚本（文件名带内部批次号，只对某次事故有效）⇒ 不进仓。
+
+*English: adds a session-capture pipeline (read DSH session logs → whitelist events → drop injected blocks →
+judge what is worth remembering → candidates → ledger → batch rollback), a shared text-similarity module, and
+four read-only probes. Capture never writes to the database; `shadow-capture --apply` refuses by design.*
+
 ## v0.4.1 — 2026-11-06
 
 **接线收口 + 判据面 + 追平。** `memory_write` / `memory_forget` 第一次**真的**接上 0.4.0 那三件
